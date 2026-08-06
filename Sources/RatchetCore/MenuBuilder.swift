@@ -91,8 +91,17 @@ public enum MenuBuilder {
     }
 
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
-        // Implemented in Task 8.
-        NSMenu()
+        let menu = NSMenu()
+        menu.addItem(disabledItem(dataStore.accountEmail))
+        menu.addItem(ClosureMenuItem(title: "Refresh projects & tasks", handler: actions.refresh))
+        let launchItem = ClosureMenuItem(title: "Launch at login", handler: actions.toggleLaunchAtLogin)
+        launchItem.state = state.launchAtLoginEnabled ? .on : .off
+        menu.addItem(launchItem)
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Open FreeAgent", handler: actions.openFreeAgent))
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Log out", handler: actions.logOut))
+        return menu
     }
 
     static func disabledItem(_ title: String) -> NSMenuItem {
