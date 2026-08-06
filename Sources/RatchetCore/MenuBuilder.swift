@@ -56,8 +56,38 @@ public enum MenuBuilder {
     }
 
     static func buildStartSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
-        // Implemented in Task 7.
-        NSMenu()
+        let menu = NSMenu()
+        for client in dataStore.clients {
+            let item = NSMenuItem(title: client.name, action: nil, keyEquivalent: "")
+            item.submenu = buildProjectsSubmenu(client: client, actions: actions)
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private static func buildProjectsSubmenu(client: RatchetClient, actions: MenuActions) -> NSMenu {
+        let menu = NSMenu()
+        for project in client.projects {
+            let item = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
+            item.submenu = buildTasksSubmenu(client: client, project: project, actions: actions)
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private static func buildTasksSubmenu(client: RatchetClient, project: RatchetProject, actions: MenuActions) -> NSMenu {
+        let menu = NSMenu()
+        for task in project.tasks {
+            let ref = TrackedTaskRef(
+                clientId: client.id, clientName: client.name,
+                projectId: project.id, projectName: project.name,
+                taskId: task.id, taskName: task.name
+            )
+            menu.addItem(ClosureMenuItem(title: task.name, handler: { actions.startTracking(ref) }))
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "New task…", handler: { actions.addTask(client.id, project.id) }))
+        return menu
     }
 
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
