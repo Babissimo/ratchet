@@ -1,7 +1,7 @@
 import AppKit
 
 public enum MenuBuilder {
-    public static func build(state: AppState, dataStore: DataStore, actions: MenuActions) -> NSMenu {
+    public static func build(state: AppState, dataStore: DataStore, actions: MenuActions, now: () -> Date = Date.init) -> NSMenu {
         switch state.screen {
         case .loggedOut:
             return buildLoggedOut(actions: actions)
@@ -10,12 +10,13 @@ public enum MenuBuilder {
         case .idle(let mostRecent):
             return buildIdle(mostRecent: mostRecent, dataStore: dataStore, state: state, actions: actions)
         case .tracking(let task, let startedAt):
-            return buildTracking(task: task, startedAt: startedAt, dataStore: dataStore, state: state, actions: actions)
+            return buildTracking(task: task, startedAt: startedAt, dataStore: dataStore, state: state, actions: actions, now: now)
         }
     }
 
     private static func buildLoggedOut(actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menu.addItem(ClosureMenuItem(title: "Log in with browser", handler: actions.logIn))
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
@@ -24,6 +25,7 @@ public enum MenuBuilder {
 
     static func buildIdle(mostRecent: TrackedTaskRef?, dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         if let mostRecent {
             menu.addItem(ClosureMenuItem(title: "Start tracking \(mostRecent.taskName)", handler: { actions.startTracking(mostRecent) }))
             menu.addItem(disabledItem("\(mostRecent.clientName) · \(mostRecent.projectName)"))
@@ -39,11 +41,12 @@ public enum MenuBuilder {
         return menu
     }
 
-    static func buildTracking(task: TrackedTaskRef, startedAt: Date, dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
+    static func buildTracking(task: TrackedTaskRef, startedAt: Date, dataStore: DataStore, state: AppState, actions: MenuActions, now: () -> Date = Date.init) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menu.addItem(disabledItem(task.taskName))
         menu.addItem(disabledItem("\(task.clientName) · \(task.projectName)"))
-        let elapsed = ElapsedTimeFormatter.format(seconds: Date().timeIntervalSince(startedAt))
+        let elapsed = ElapsedTimeFormatter.format(seconds: now().timeIntervalSince(startedAt))
         menu.addItem(disabledItem(elapsed))
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Stop tracking", handler: actions.stopTracking))
@@ -57,6 +60,7 @@ public enum MenuBuilder {
 
     static func buildStartSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         for client in dataStore.clients {
             let item = NSMenuItem(title: client.name, action: nil, keyEquivalent: "")
             item.submenu = buildProjectsSubmenu(client: client, actions: actions)
@@ -67,6 +71,7 @@ public enum MenuBuilder {
 
     private static func buildProjectsSubmenu(client: RatchetClient, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         for project in client.projects {
             let item = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
             item.submenu = buildTasksSubmenu(client: client, project: project, actions: actions)
@@ -77,6 +82,7 @@ public enum MenuBuilder {
 
     private static func buildTasksSubmenu(client: RatchetClient, project: RatchetProject, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         for task in project.tasks {
             let ref = TrackedTaskRef(
                 clientId: client.id, clientName: client.name,
@@ -92,6 +98,7 @@ public enum MenuBuilder {
 
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menu.addItem(disabledItem(dataStore.accountEmail))
         menu.addItem(ClosureMenuItem(title: "Refresh projects & tasks", handler: actions.refresh))
         let launchItem = ClosureMenuItem(title: "Launch at login", handler: actions.toggleLaunchAtLogin)
