@@ -3,10 +3,21 @@ import AppKit
 @testable import RatchetCore
 
 final class StatusItemControllerTests: XCTestCase {
+    private var controller: StatusItemController?
+
+    override func tearDown() {
+        if let controller {
+            NSStatusBar.system.removeStatusItem(controller.statusItemForTesting)
+        }
+        controller = nil
+        super.tearDown()
+    }
+
     func test_construction_setsInitialMenuOnStatusItem() {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
         let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
 
         XCTAssertNotNil(controller.statusItemForTesting.menu)
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
@@ -16,6 +27,7 @@ final class StatusItemControllerTests: XCTestCase {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
         let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
 
         appState.logIn()
 
