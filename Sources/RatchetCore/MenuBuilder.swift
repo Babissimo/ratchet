@@ -40,8 +40,19 @@ public enum MenuBuilder {
     }
 
     static func buildTracking(task: TrackedTaskRef, startedAt: Date, dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
-        // Implemented in Task 6.
-        NSMenu()
+        let menu = NSMenu()
+        menu.addItem(disabledItem(task.taskName))
+        menu.addItem(disabledItem("\(task.clientName) · \(task.projectName)"))
+        let elapsed = ElapsedTimeFormatter.format(seconds: Date().timeIntervalSince(startedAt))
+        menu.addItem(disabledItem(elapsed))
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Stop tracking", handler: actions.stopTracking))
+        menu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
+        menu.addItem(settingsItem)
+        menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
+        return menu
     }
 
     static func buildStartSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
