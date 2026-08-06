@@ -3,9 +3,11 @@ import AppKit
 import RatchetCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: PlaceholderStatusItem?
+    private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = PlaceholderStatusItem()
+        let dataStore = FakeDataStore.seeded()
+        let appState = AppState()
+        statusItemController = StatusItemController(appState: appState, dataStore: dataStore)
     }
 }
