@@ -58,13 +58,14 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         state.logIn()
         state.startTracking(sampleTask)
 
-        let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions())
+        let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions(), now: { Date(timeIntervalSince1970: 6420) })
 
         XCTAssertEqual(menu.items[0].title, "Development")
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertEqual(menu.items[1].title, "Acme · Website Redesign")
         XCTAssertFalse(menu.items[1].isEnabled)
-        XCTAssertFalse(menu.items[2].isEnabled) // elapsed time line
+        XCTAssertEqual(menu.items[2].title, "1:47") // elapsed time line
+        XCTAssertFalse(menu.items[2].isEnabled)
         XCTAssertTrue(menu.items[3].isSeparatorItem)
         XCTAssertEqual(menu.items[4].title, "Stop tracking")
         XCTAssertTrue(menu.items[5].isSeparatorItem)
