@@ -34,10 +34,10 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         XCTAssertEqual(menu.items[1].attributedTitle?.string, "Refresh projects & tasks\nNever refreshed")
     }
 
-    func test_refreshItem_showsLastRefreshedTimestampAfterRefresh() {
+    func test_refreshItem_showsLastRefreshedTimestampAfterRefresh() async throws {
         let fixedDate = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11-14 22:13 UTC
         let store = FakeDataStore(clients: [], accountEmail: "al@example.com", clock: { fixedDate })
-        store.refresh()
+        try await store.refresh()
 
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: store, state: AppState(), actions: noopActions())
 

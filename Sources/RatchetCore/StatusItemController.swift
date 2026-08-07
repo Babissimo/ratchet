@@ -26,9 +26,41 @@ public final class StatusItemController {
     private lazy var actions: MenuActions = MenuActions(
         logIn: { [weak self] in self?.appState.logIn() },
         logOut: { [weak self] in self?.appState.logOut() },
-        startTracking: { [weak self] task in self?.appState.startTracking(task) },
-        stopTracking: { [weak self] in self?.appState.stopTracking() },
-        refresh: { [weak self] in self?.dataStore.refresh(); self?.rebuild() },
+        startTracking: { [weak self] task in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    let timeslip = try await self.dataStore.startTimer(
+                        taskId: task.taskId, projectId: task.projectId, clientId: task.clientId
+                    )
+                    self.appState.startTracking(task, startedAt: timeslip.date)
+                } catch {
+                    self.presentAPIError(error, action: "start tracking")
+                }
+            }
+        },
+        stopTracking: { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    _ = try await self.dataStore.stopTimer()
+                    self.appState.stopTracking()
+                } catch {
+                    self.presentAPIError(error, action: "stop tracking")
+                }
+            }
+        },
+        refresh: { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    try await self.dataStore.refresh()
+                    self.rebuild()
+                } catch {
+                    self.presentAPIError(error, action: "refresh")
+                }
+            }
+        },
         toggleLaunchAtLogin: { [weak self] in
             guard let self else { return }
             self.appState.setLaunchAtLogin(!self.appState.launchAtLoginEnabled)
@@ -55,6 +87,16 @@ public final class StatusItemController {
             NSApp.terminate(nil)
         }
     )
+
+    private func presentAPIError(_ error: Error, action: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't \(action)"
+        alert.informativeText = "\(error)"
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
 
     private func rebuild() {
         let menu = MenuBuilder.build(state: appState, dataStore: dataStore, actions: actions)
@@ -264,16 +306,22 @@ public final class StatusItemController {
         }
         guard let billingRate = parseOptionalBillingRate(billingRateField) else { return }
 
-        _ = dataStore.addTask(
-            name: name,
-            projectId: projectId,
-            clientId: clientId,
-            isBillable: billableCheckbox.state == .on,
-            status: status,
-            billingRate: billingRate,
-            billingPeriod: billingRate == nil ? nil : billingPeriod
-        )
-        rebuild()
+        Task { @MainActor in
+            do {
+                _ = try await self.dataStore.addTask(
+                    name: name,
+                    projectId: projectId,
+                    clientId: clientId,
+                    isBillable: billableCheckbox.state == .on,
+                    status: status,
+                    billingRate: billingRate,
+                    billingPeriod: billingRate == nil ? nil : billingPeriod
+                )
+                self.rebuild()
+            } catch {
+                self.presentAPIError(error, action: "create the task")
+            }
+        }
     }
 
     private func presentLogPastTimeForm(clientId: String, projectId: String, taskId: String) {
@@ -316,21 +364,27 @@ public final class StatusItemController {
             return
         }
 
-        _ = dataStore.logTime(
-            taskId: taskId,
-            projectId: projectId,
-            clientId: clientId,
-            date: datePicker.dateValue,
-            hours: hours,
-            comment: TaskNameValidator.validate(commentField.stringValue)
-        )
-        rebuild()
+        Task { @MainActor in
+            do {
+                _ = try await self.dataStore.logTime(
+                    taskId: taskId,
+                    projectId: projectId,
+                    clientId: clientId,
+                    date: datePicker.dateValue,
+                    hours: hours,
+                    comment: TaskNameValidator.validate(commentField.stringValue)
+                )
+                self.rebuild()
 
-        let taskName = dataStore.clients.first(where: { $0.id == clientId })?
-            .projects.first(where: { $0.id == projectId })?
-            .tasks.first(where: { $0.id == taskId })?
-            .name ?? "the task"
-        presentLoggedConfirmation(taskName: taskName, hours: hours, date: datePicker.dateValue)
+                let taskName = self.dataStore.clients.first(where: { $0.id == clientId })?
+                    .projects.first(where: { $0.id == projectId })?
+                    .tasks.first(where: { $0.id == taskId })?
+                    .name ?? "the task"
+                self.presentLoggedConfirmation(taskName: taskName, hours: hours, date: datePicker.dateValue)
+            } catch {
+                self.presentAPIError(error, action: "log time")
+            }
+        }
     }
 
     private func presentLogPastTimeForNewTaskForm(clientId: String, projectId: String) {
@@ -388,29 +442,31 @@ public final class StatusItemController {
             return
         }
 
-        guard let newTask = dataStore.addTask(
-            name: name,
-            projectId: projectId,
-            clientId: clientId,
-            isBillable: billableCheckbox.state == .on,
-            status: status,
-            billingRate: billingRate,
-            billingPeriod: billingRate == nil ? nil : billingPeriod
-        ) else {
-            presentValidationError("Couldn't create the task.")
-            return
+        Task { @MainActor in
+            do {
+                let newTask = try await self.dataStore.addTask(
+                    name: name,
+                    projectId: projectId,
+                    clientId: clientId,
+                    isBillable: billableCheckbox.state == .on,
+                    status: status,
+                    billingRate: billingRate,
+                    billingPeriod: billingRate == nil ? nil : billingPeriod
+                )
+                _ = try await self.dataStore.logTime(
+                    taskId: newTask.id,
+                    projectId: projectId,
+                    clientId: clientId,
+                    date: datePicker.dateValue,
+                    hours: hours,
+                    comment: TaskNameValidator.validate(commentField.stringValue)
+                )
+                self.rebuild()
+                self.presentLoggedConfirmation(taskName: name, hours: hours, date: datePicker.dateValue)
+            } catch {
+                self.presentAPIError(error, action: "create the task and log time")
+            }
         }
-
-        _ = dataStore.logTime(
-            taskId: newTask.id,
-            projectId: projectId,
-            clientId: clientId,
-            date: datePicker.dateValue,
-            hours: hours,
-            comment: TaskNameValidator.validate(commentField.stringValue)
-        )
-        rebuild()
-        presentLoggedConfirmation(taskName: name, hours: hours, date: datePicker.dateValue)
     }
 
     private func presentLoggedConfirmation(taskName: String, hours: Double, date: Date) {
@@ -511,16 +567,22 @@ public final class StatusItemController {
             presentValidationError("\"\(email)\" doesn't look like a valid email address.")
             return
         }
-        _ = dataStore.addClient(
-            name: name,
-            email: email,
-            phoneNumber: TaskNameValidator.validate(phoneField.stringValue),
-            address1: TaskNameValidator.validate(address1Field.stringValue),
-            town: TaskNameValidator.validate(townField.stringValue),
-            postcode: TaskNameValidator.validate(postcodeField.stringValue),
-            country: TaskNameValidator.validate(countryField.stringValue)
-        )
-        rebuild()
+        Task { @MainActor in
+            do {
+                _ = try await self.dataStore.addClient(
+                    name: name,
+                    email: email,
+                    phoneNumber: TaskNameValidator.validate(phoneField.stringValue),
+                    address1: TaskNameValidator.validate(address1Field.stringValue),
+                    town: TaskNameValidator.validate(townField.stringValue),
+                    postcode: TaskNameValidator.validate(postcodeField.stringValue),
+                    country: TaskNameValidator.validate(countryField.stringValue)
+                )
+                self.rebuild()
+            } catch {
+                self.presentAPIError(error, action: "create the client")
+            }
+        }
     }
 
     private func resolvedClientName(organisationName: String, firstName: String, lastName: String) -> String? {
@@ -652,22 +714,28 @@ public final class StatusItemController {
             return
         }
 
-        _ = dataStore.addProject(
-            name: name,
-            clientId: clientId,
-            status: status,
-            currency: currencyPopup.titleOfSelectedItem ?? "GBP",
-            budget: budget,
-            budgetUnits: budgetUnits,
-            hoursPerDay: hoursPerDay,
-            normalBillingRate: billingRate,
-            billingPeriod: billingPeriod,
-            usesProjectInvoiceSequence: invoiceSequenceCheckbox.state == .on,
-            contractPoReference: TaskNameValidator.validate(poReferenceField.stringValue),
-            startsOn: startsOn,
-            endsOn: endsOn
-        )
-        rebuild()
+        Task { @MainActor in
+            do {
+                _ = try await self.dataStore.addProject(
+                    name: name,
+                    clientId: clientId,
+                    status: status,
+                    currency: currencyPopup.titleOfSelectedItem ?? "GBP",
+                    budget: budget,
+                    budgetUnits: budgetUnits,
+                    hoursPerDay: hoursPerDay,
+                    normalBillingRate: billingRate,
+                    billingPeriod: billingPeriod,
+                    usesProjectInvoiceSequence: invoiceSequenceCheckbox.state == .on,
+                    contractPoReference: TaskNameValidator.validate(poReferenceField.stringValue),
+                    startsOn: startsOn,
+                    endsOn: endsOn
+                )
+                self.rebuild()
+            } catch {
+                self.presentAPIError(error, action: "create the project")
+            }
+        }
     }
 
     /// A deliberately loose shape check (local@domain.tld), not full RFC 5322 validation —
