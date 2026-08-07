@@ -5,6 +5,7 @@ public protocol DataStore: AnyObject {
     var accountEmail: String { get }
     var timeslips: [RatchetTimeslip] { get }
     var lastRefreshedAt: Date? { get }
+
     func addTask(
         name: String,
         projectId: String,
@@ -13,7 +14,8 @@ public protocol DataStore: AnyObject {
         status: TaskStatus,
         billingRate: Double?,
         billingPeriod: BillingPeriod?
-    ) -> RatchetTask?
+    ) async throws -> RatchetTask
+
     func addClient(
         name: String,
         email: String?,
@@ -22,7 +24,8 @@ public protocol DataStore: AnyObject {
         town: String?,
         postcode: String?,
         country: String?
-    ) -> RatchetClient?
+    ) async throws -> RatchetClient
+
     func addProject(
         name: String,
         clientId: String,
@@ -37,7 +40,8 @@ public protocol DataStore: AnyObject {
         contractPoReference: String?,
         startsOn: Date?,
         endsOn: Date?
-    ) -> RatchetProject?
+    ) async throws -> RatchetProject
+
     func logTime(
         taskId: String,
         projectId: String,
@@ -45,6 +49,16 @@ public protocol DataStore: AnyObject {
         date: Date,
         hours: Double,
         comment: String?
-    ) -> RatchetTimeslip?
-    func refresh()
+    ) async throws -> RatchetTimeslip
+
+    func refresh() async throws
+
+    /// Starts (or resumes) today's timer for the given task. Returns the
+    /// timeslip the timer is running on; its effective start instant is
+    /// the UI's elapsed-time baseline.
+    func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip
+
+    /// Stops whichever timeslip currently has a running timer. Returns
+    /// the updated timeslip, or nil if nothing was running.
+    func stopTimer() async throws -> RatchetTimeslip?
 }
