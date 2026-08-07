@@ -6,7 +6,9 @@ let package = Package(
     platforms: [.macOS(.v13)],
     targets: [
         .target(name: "RatchetCore"),
-        .executableTarget(name: "Ratchet", dependencies: ["RatchetCore"]),
+        .target(name: "FreeAgentKit", dependencies: ["RatchetCore"]),
+        .executableTarget(name: "Ratchet", dependencies: ["RatchetCore", "FreeAgentKit"]),
         .testTarget(name: "RatchetCoreTests", dependencies: ["RatchetCore"]),
+        .testTarget(name: "FreeAgentKitTests", dependencies: ["FreeAgentKit"]),
     ]
 )
