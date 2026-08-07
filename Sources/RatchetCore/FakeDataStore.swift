@@ -4,10 +4,15 @@ public final class FakeDataStore: DataStore {
     public private(set) var clients: [RatchetClient]
     public let accountEmail: String
     public private(set) var refreshCount = 0
+    public private(set) var timeslips: [RatchetTimeslip] = []
+    public private(set) var lastRefreshedAt: Date?
 
-    public init(clients: [RatchetClient], accountEmail: String) {
+    private let clock: () -> Date
+
+    public init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
         self.clients = clients
         self.accountEmail = accountEmail
+        self.clock = clock
     }
 
     public static func seeded() -> FakeDataStore {
@@ -21,19 +26,159 @@ public final class FakeDataStore: DataStore {
         return FakeDataStore(clients: [acme, otherCo], accountEmail: "al@example.com")
     }
 
-    public func addTask(name: String, projectId: String, clientId: String) -> RatchetTask? {
+    public func addTask(
+        name: String,
+        projectId: String,
+        clientId: String,
+        isBillable: Bool = true,
+        status: TaskStatus = .active,
+        billingRate: Double? = nil,
+        billingPeriod: BillingPeriod? = nil
+    ) -> RatchetTask? {
         guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { return nil }
         guard let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId }) else { return nil }
 
-        let newTask = RatchetTask(id: "task-\(UUID().uuidString.prefix(8))", name: name)
+        let newTask = RatchetTask(
+            id: "task-\(UUID().uuidString.prefix(8))",
+            name: name,
+            isBillable: isBillable,
+            status: status,
+            billingRate: billingRate,
+            billingPeriod: billingPeriod
+        )
         var projects = clients[clientIndex].projects
         let existingProject = projects[projectIndex]
-        projects[projectIndex] = RatchetProject(id: existingProject.id, name: existingProject.name, tasks: existingProject.tasks + [newTask])
-        clients[clientIndex] = RatchetClient(id: clients[clientIndex].id, name: clients[clientIndex].name, projects: projects)
+        projects[projectIndex] = RatchetProject(
+            id: existingProject.id,
+            name: existingProject.name,
+            tasks: existingProject.tasks + [newTask],
+            status: existingProject.status,
+            currency: existingProject.currency,
+            budget: existingProject.budget,
+            budgetUnits: existingProject.budgetUnits,
+            hoursPerDay: existingProject.hoursPerDay,
+            normalBillingRate: existingProject.normalBillingRate,
+            billingPeriod: existingProject.billingPeriod,
+            usesProjectInvoiceSequence: existingProject.usesProjectInvoiceSequence,
+            contractPoReference: existingProject.contractPoReference,
+            startsOn: existingProject.startsOn,
+            endsOn: existingProject.endsOn
+        )
+        clients[clientIndex] = RatchetClient(
+            id: clients[clientIndex].id,
+            name: clients[clientIndex].name,
+            projects: projects,
+            email: clients[clientIndex].email,
+            phoneNumber: clients[clientIndex].phoneNumber,
+            address1: clients[clientIndex].address1,
+            town: clients[clientIndex].town,
+            postcode: clients[clientIndex].postcode,
+            country: clients[clientIndex].country
+        )
         return newTask
+    }
+
+    public func addClient(
+        name: String,
+        email: String? = nil,
+        phoneNumber: String? = nil,
+        address1: String? = nil,
+        town: String? = nil,
+        postcode: String? = nil,
+        country: String? = nil
+    ) -> RatchetClient? {
+        let newClient = RatchetClient(
+            id: "client-\(UUID().uuidString.prefix(8))",
+            name: name,
+            projects: [],
+            email: email,
+            phoneNumber: phoneNumber,
+            address1: address1,
+            town: town,
+            postcode: postcode,
+            country: country
+        )
+        clients.append(newClient)
+        return newClient
+    }
+
+    public func addProject(
+        name: String,
+        clientId: String,
+        status: ProjectStatus,
+        currency: String,
+        budget: Double,
+        budgetUnits: BudgetUnits,
+        hoursPerDay: Double,
+        normalBillingRate: Double,
+        billingPeriod: BillingPeriod,
+        usesProjectInvoiceSequence: Bool,
+        contractPoReference: String? = nil,
+        startsOn: Date? = nil,
+        endsOn: Date? = nil
+    ) -> RatchetProject? {
+        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { return nil }
+
+        let newProject = RatchetProject(
+            id: "proj-\(UUID().uuidString.prefix(8))",
+            name: name,
+            tasks: [],
+            status: status,
+            currency: currency,
+            budget: budget,
+            budgetUnits: budgetUnits,
+            hoursPerDay: hoursPerDay,
+            normalBillingRate: normalBillingRate,
+            billingPeriod: billingPeriod,
+            usesProjectInvoiceSequence: usesProjectInvoiceSequence,
+            contractPoReference: contractPoReference,
+            startsOn: startsOn,
+            endsOn: endsOn
+        )
+        var projects = clients[clientIndex].projects
+        projects.append(newProject)
+        clients[clientIndex] = RatchetClient(
+            id: clients[clientIndex].id,
+            name: clients[clientIndex].name,
+            projects: projects,
+            email: clients[clientIndex].email,
+            phoneNumber: clients[clientIndex].phoneNumber,
+            address1: clients[clientIndex].address1,
+            town: clients[clientIndex].town,
+            postcode: clients[clientIndex].postcode,
+            country: clients[clientIndex].country
+        )
+        return newProject
+    }
+
+    public func logTime(
+        taskId: String,
+        projectId: String,
+        clientId: String,
+        date: Date,
+        hours: Double,
+        comment: String? = nil
+    ) -> RatchetTimeslip? {
+        guard let client = clients.first(where: { $0.id == clientId }),
+              let project = client.projects.first(where: { $0.id == projectId }),
+              project.tasks.contains(where: { $0.id == taskId })
+        else { return nil }
+
+        let entry = RatchetTimeslip(
+            id: "timeslip-\(UUID().uuidString.prefix(8))",
+            clientId: clientId,
+            projectId: projectId,
+            taskId: taskId,
+            date: date,
+            hours: hours,
+            comment: comment
+        )
+        timeslips.append(entry)
+        return entry
     }
 
     public func refresh() {
         refreshCount += 1
+        lastRefreshedAt = clock()
     }
 }

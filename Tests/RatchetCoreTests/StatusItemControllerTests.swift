@@ -31,6 +31,6 @@ final class StatusItemControllerTests: XCTestCase {
 
         appState.logIn()
 
-        XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Start")
+        XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Start timer")
     }
 }

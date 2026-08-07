@@ -13,7 +13,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
         )
     }
 
@@ -27,10 +27,12 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
 
         XCTAssertEqual(menu.items.map(\.title), [
             "Start tracking Development",
-            "Acme · Website Redesign",
-            "Start", "", "Settings", "Quit",
+            "Start timer", "", "Log past time", "Recent time entries", "", "Settings", "Quit",
         ])
-        XCTAssertFalse(menu.items[1].isEnabled)
+        // Client/project context is coupled into the same row via attributedTitle, not a
+        // separate menu item — the plain .title is the fallback string, the two-line
+        // rendering lives in .attributedTitle.
+        XCTAssertEqual(menu.items[0].attributedTitle?.string, "Start tracking Development\nAcme · Website Redesign")
     }
 
     func test_idleWithHistory_topItemStartsTrackingTheMostRecentTask() {
@@ -38,7 +40,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()
@@ -60,14 +62,15 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
 
         let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions(), now: { Date(timeIntervalSince1970: 6420) })
 
-        XCTAssertEqual(menu.items[0].title, "Development")
+        XCTAssertEqual(menu.items[0].title, "1:47") // elapsed time line, on top per user request
         XCTAssertFalse(menu.items[0].isEnabled)
-        XCTAssertEqual(menu.items[1].title, "Acme · Website Redesign")
-        XCTAssertFalse(menu.items[1].isEnabled)
-        XCTAssertEqual(menu.items[2].title, "1:47") // elapsed time line
-        XCTAssertFalse(menu.items[2].isEnabled)
-        XCTAssertTrue(menu.items[3].isSeparatorItem)
-        XCTAssertEqual(menu.items[4].title, "Stop tracking")
+        XCTAssertEqual(menu.items[1].title, "Stop tracking Development")
+        // Client/project context is coupled into the same row via attributedTitle, matching
+        // the "Start tracking" row's treatment.
+        XCTAssertEqual(menu.items[1].attributedTitle?.string, "Stop tracking Development\nAcme · Website Redesign")
+        XCTAssertTrue(menu.items[2].isSeparatorItem)
+        XCTAssertEqual(menu.items[3].title, "Log past time")
+        XCTAssertEqual(menu.items[4].title, "Recent time entries")
         XCTAssertTrue(menu.items[5].isSeparatorItem)
         XCTAssertEqual(menu.items[6].title, "Settings")
         XCTAssertEqual(menu.items[7].title, "Quit")
@@ -78,14 +81,14 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: { stopped = true },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()
         state.startTracking(sampleTask)
 
         let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: actions)
-        let stopItem = menu.items[4] as! ClosureMenuItem
+        let stopItem = menu.items[1] as! ClosureMenuItem
         _ = stopItem.target?.perform(stopItem.action, with: stopItem)
 
         XCTAssertTrue(stopped)

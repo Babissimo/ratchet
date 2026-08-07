@@ -7,6 +7,10 @@ public struct MenuActions {
     public let toggleLaunchAtLogin: () -> Void
     public let openFreeAgent: () -> Void
     public let addTask: (_ clientId: String, _ projectId: String) -> Void
+    public let addClient: () -> Void
+    public let addProject: (_ clientId: String) -> Void
+    public let logPastTime: (_ clientId: String, _ projectId: String, _ taskId: String) -> Void
+    public let logPastTimeForNewTask: (_ clientId: String, _ projectId: String) -> Void
     public let quit: () -> Void
 
     public init(
@@ -18,6 +22,10 @@ public struct MenuActions {
         toggleLaunchAtLogin: @escaping () -> Void,
         openFreeAgent: @escaping () -> Void,
         addTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
+        addClient: @escaping () -> Void,
+        addProject: @escaping (_ clientId: String) -> Void,
+        logPastTime: @escaping (_ clientId: String, _ projectId: String, _ taskId: String) -> Void,
+        logPastTimeForNewTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
         quit: @escaping () -> Void
     ) {
         self.logIn = logIn
@@ -28,6 +36,10 @@ public struct MenuActions {
         self.toggleLaunchAtLogin = toggleLaunchAtLogin
         self.openFreeAgent = openFreeAgent
         self.addTask = addTask
+        self.addClient = addClient
+        self.addProject = addProject
+        self.logPastTime = logPastTime
+        self.logPastTimeForNewTask = logPastTimeForNewTask
         self.quit = quit
     }
 }

@@ -7,7 +7,7 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
         )
     }
 
@@ -24,7 +24,7 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         let actions = MenuActions(
             logIn: { loggedIn = true }, logOut: {}, startTracking: { _ in }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
         )
         let menu = MenuBuilder.build(state: AppState(), dataStore: FakeDataStore.seeded(), actions: actions)
 
@@ -39,8 +39,11 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         state.logIn()
         let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions())
 
-        XCTAssertEqual(menu.items.map(\.title), ["Start", "", "Settings", "Quit"])
+        XCTAssertEqual(menu.items.map(\.title), ["Start timer", "", "Log past time", "Recent time entries", "", "Settings", "Quit"])
+        XCTAssertTrue(menu.items[1].isSeparatorItem)
         XCTAssertNotNil(menu.items[0].submenu)
         XCTAssertNotNil(menu.items[2].submenu)
+        XCTAssertNotNil(menu.items[3].submenu)
+        XCTAssertNotNil(menu.items[5].submenu)
     }
 }

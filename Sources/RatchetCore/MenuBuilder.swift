@@ -27,12 +27,24 @@ public enum MenuBuilder {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if let mostRecent {
-            menu.addItem(ClosureMenuItem(title: "Start tracking \(mostRecent.taskName)", handler: { actions.startTracking(mostRecent) }))
-            menu.addItem(disabledItem("\(mostRecent.clientName) · \(mostRecent.projectName)"))
+            let title = "Start tracking \(mostRecent.taskName)"
+            let item = ClosureMenuItem(title: title, handler: { actions.startTracking(mostRecent) })
+            item.attributedTitle = twoLineAttributedTitle(
+                firstLine: title,
+                secondLine: "\(mostRecent.clientName) · \(mostRecent.projectName)"
+            )
+            menu.addItem(item)
         }
-        let startItem = NSMenuItem(title: "Start", action: nil, keyEquivalent: "")
+        let startItem = NSMenuItem(title: "Start timer", action: nil, keyEquivalent: "")
         startItem.submenu = buildStartSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(startItem)
+        menu.addItem(.separator())
+        let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
+        logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
+        menu.addItem(logPastTimeItem)
+        let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
+        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
+        menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
         settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
@@ -44,12 +56,22 @@ public enum MenuBuilder {
     static func buildTracking(task: TrackedTaskRef, startedAt: Date, dataStore: DataStore, state: AppState, actions: MenuActions, now: () -> Date = Date.init) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(disabledItem(task.taskName))
-        menu.addItem(disabledItem("\(task.clientName) · \(task.projectName)"))
         let elapsed = ElapsedTimeFormatter.format(seconds: now().timeIntervalSince(startedAt))
         menu.addItem(disabledItem(elapsed))
+        let stopTitle = "Stop tracking \(task.taskName)"
+        let stopItem = ClosureMenuItem(title: stopTitle, handler: actions.stopTracking)
+        stopItem.attributedTitle = twoLineAttributedTitle(
+            firstLine: stopTitle,
+            secondLine: "\(task.clientName) · \(task.projectName)"
+        )
+        menu.addItem(stopItem)
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Stop tracking", handler: actions.stopTracking))
+        let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
+        logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
+        menu.addItem(logPastTimeItem)
+        let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
+        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
+        menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
         settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
@@ -61,28 +83,41 @@ public enum MenuBuilder {
     static func buildStartSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        if dataStore.clients.isEmpty {
+            menu.addItem(disabledItem("No clients"))
+        }
         for client in dataStore.clients {
             let item = NSMenuItem(title: client.name, action: nil, keyEquivalent: "")
             item.submenu = buildProjectsSubmenu(client: client, actions: actions)
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Add client…", handler: actions.addClient))
         return menu
     }
 
     private static func buildProjectsSubmenu(client: RatchetClient, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        if client.projects.isEmpty {
+            menu.addItem(disabledItem("No projects"))
+        }
         for project in client.projects {
             let item = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
             item.submenu = buildTasksSubmenu(client: client, project: project, actions: actions)
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Add project…", handler: { actions.addProject(client.id) }))
         return menu
     }
 
     private static func buildTasksSubmenu(client: RatchetClient, project: RatchetProject, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        if project.tasks.isEmpty {
+            menu.addItem(disabledItem("No tasks"))
+        }
         for task in project.tasks {
             let ref = TrackedTaskRef(
                 clientId: client.id, clientName: client.name,
@@ -96,11 +131,94 @@ public enum MenuBuilder {
         return menu
     }
 
+    static func buildLogPastTimeSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if dataStore.clients.isEmpty {
+            menu.addItem(disabledItem("No clients"))
+        }
+        for client in dataStore.clients {
+            let item = NSMenuItem(title: client.name, action: nil, keyEquivalent: "")
+            item.submenu = buildLogPastTimeProjectsSubmenu(client: client, actions: actions)
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Add client…", handler: actions.addClient))
+        return menu
+    }
+
+    private static func buildLogPastTimeProjectsSubmenu(client: RatchetClient, actions: MenuActions) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if client.projects.isEmpty {
+            menu.addItem(disabledItem("No projects"))
+        }
+        for project in client.projects {
+            let item = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
+            item.submenu = buildLogPastTimeTasksSubmenu(client: client, project: project, actions: actions)
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Add project…", handler: { actions.addProject(client.id) }))
+        return menu
+    }
+
+    private static func buildLogPastTimeTasksSubmenu(client: RatchetClient, project: RatchetProject, actions: MenuActions) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if project.tasks.isEmpty {
+            menu.addItem(disabledItem("No tasks"))
+        }
+        for task in project.tasks {
+            menu.addItem(ClosureMenuItem(title: task.name, handler: { actions.logPastTime(client.id, project.id, task.id) }))
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "New task…", handler: { actions.logPastTimeForNewTask(client.id, project.id) }))
+        return menu
+    }
+
+    static func buildRecentTimeEntriesSubmenu(dataStore: DataStore) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let recent = dataStore.timeslips.reversed().prefix(20)
+        if recent.isEmpty {
+            menu.addItem(disabledItem("No time logged yet"))
+            return menu
+        }
+        for entry in recent {
+            let path = path(for: entry, in: dataStore)
+            let duration = ElapsedTimeFormatter.format(seconds: entry.hours * 3600)
+            let dateText = recentEntryDateFormatter.string(from: entry.date)
+            menu.addItem(disabledItem("\(path) · \(duration) · \(dateText)"))
+        }
+        return menu
+    }
+
+    private static func path(for entry: RatchetTimeslip, in dataStore: DataStore) -> String {
+        guard let client = dataStore.clients.first(where: { $0.id == entry.clientId }) else { return "Unknown task" }
+        guard let project = client.projects.first(where: { $0.id == entry.projectId }) else { return "\(client.name) · Unknown task" }
+        guard let task = project.tasks.first(where: { $0.id == entry.taskId }) else { return "\(client.name) · \(project.name) · Unknown task" }
+        return "\(client.name) · \(project.name) · \(task.name)"
+    }
+
+    private static let recentEntryDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.addItem(disabledItem(dataStore.accountEmail))
-        menu.addItem(ClosureMenuItem(title: "Refresh projects & tasks", handler: actions.refresh))
+        let refreshTitle = "Refresh projects & tasks"
+        let refreshItem = ClosureMenuItem(title: refreshTitle, handler: actions.refresh)
+        refreshItem.attributedTitle = twoLineAttributedTitle(
+            firstLine: refreshTitle,
+            secondLine: lastRefreshedSubtitle(dataStore.lastRefreshedAt)
+        )
+        menu.addItem(refreshItem)
         let launchItem = ClosureMenuItem(title: "Launch at login", handler: actions.toggleLaunchAtLogin)
         launchItem.state = state.launchAtLoginEnabled ? .on : .off
         menu.addItem(launchItem)
@@ -116,4 +234,34 @@ public enum MenuBuilder {
         item.isEnabled = false
         return item
     }
+
+    /// Two-line title (e.g. "Start tracking X" over "Client · Project", or
+    /// "Refresh projects & tasks" over "Last refreshed at …") rendered as a single menu row
+    /// with one click target, so the action and its context read as one coupled unit rather
+    /// than two adjacent-looking items.
+    private static func twoLineAttributedTitle(firstLine: String, secondLine: String) -> NSAttributedString {
+        let result = NSMutableAttributedString(
+            string: "\(firstLine)\n",
+            attributes: [.font: NSFont.menuFont(ofSize: 0)]
+        )
+        result.append(NSAttributedString(
+            string: secondLine,
+            attributes: [
+                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        ))
+        return result
+    }
+
+    private static func lastRefreshedSubtitle(_ lastRefreshedAt: Date?) -> String {
+        guard let lastRefreshedAt else { return "Never refreshed" }
+        return "Last refreshed at \(lastRefreshedAtFormatter.string(from: lastRefreshedAt))"
+    }
+
+    private static let lastRefreshedAtFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm 'on' yyyy-MM-dd"
+        return formatter
+    }()
 }
