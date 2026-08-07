@@ -78,4 +78,18 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(state.launchAtLoginEnabled)
         XCTAssertTrue(changed)
     }
+
+    func test_startTracking_withExplicitStartedAt_usesThatInstantNotClock() {
+        let clockDate = Date(timeIntervalSince1970: 2_000_000_000)
+        let explicitStart = Date(timeIntervalSince1970: 1_000_000_000)
+        let state = AppState(clock: { clockDate })
+
+        state.logIn()
+        state.startTracking(sampleTask, startedAt: explicitStart)
+
+        guard case .tracking(_, let startedAt) = state.screen else {
+            return XCTFail("expected .tracking, got \(state.screen)")
+        }
+        XCTAssertEqual(startedAt, explicitStart)
+    }
 }

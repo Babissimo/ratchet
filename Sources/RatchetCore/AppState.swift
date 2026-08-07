@@ -48,9 +48,9 @@ public final class AppState {
         onChange?()
     }
 
-    public func startTracking(_ task: TrackedTaskRef) {
+    public func startTracking(_ task: TrackedTaskRef, startedAt: Date? = nil) {
         trackingTask = task
-        trackingStartedAt = clock()
+        trackingStartedAt = startedAt ?? clock()
         mostRecent = task
         onChange?()
     }
