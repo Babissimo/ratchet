@@ -87,9 +87,6 @@ final class AppStateTests: XCTestCase {
         state.logIn()
         state.startTracking(sampleTask, startedAt: explicitStart)
 
-        guard case .tracking(_, let startedAt) = state.screen else {
-            return XCTFail("expected .tracking, got \(state.screen)")
-        }
-        XCTAssertEqual(startedAt, explicitStart)
+        XCTAssertEqual(state.screen, .tracking(task: sampleTask, startedAt: explicitStart))
     }
 }
