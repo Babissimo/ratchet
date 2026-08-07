@@ -20,10 +20,11 @@ is otherwise working end to end.
 - `AppState.startTracking`/`stopTracking` currently only flip local
   in-memory state; they never call `DataStore`. This is a gap this spec
   closes — starting/stopping must actually start/stop a FreeAgent timer.
-- Redirect URI is a local loopback HTTP listener
-  (`http://127.0.0.1:53682/callback`), not a custom URL scheme — the app
-  isn't currently bundled as a real `.app` (no `Info.plist`), and adding
-  that is deferred. Loopback works with zero bundling changes.
+- Redirect URI is the custom URL scheme `ratchet://callback`. This means
+  the app needs to become a real `.app` bundle (`Info.plist` with
+  `CFBundleURLTypes`) rather than SPM's raw executable — that bundling
+  work is in scope for this pass, done via a build script rather than
+  converting to an Xcode project, to stay SPM-only.
 - Client credentials (`client_id`/`client_secret`) live in a gitignored
   `Secrets.swift`, since they're app credentials for a personal
   single-user app, not secrets requiring Keychain-grade protection.
@@ -63,22 +64,53 @@ Package.swift
   (`https://api.sandbox.freeagent.com`) and the OAuth authorize/token URLs.
   Switching to production later means changing this one value.
 
+## App bundling: `Ratchet.app`
+
+SPM's `swift build` only produces a raw Mach-O executable — macOS will
+only route a custom URL scheme to an app that Launch Services knows about
+via a bundle's `Info.plist`. `scripts/build-app.sh`:
+
+1. Runs `swift build -c release` (or `debug` via a flag, for local iteration).
+2. Assembles `.build/Ratchet.app/Contents/{MacOS,Resources}`, copies the
+   built binary into `Contents/MacOS/Ratchet`, and writes
+   `Contents/Info.plist` (bundle id `com.ratchet.app`, `LSUIElement: true`
+   to keep it a menu-bar-only accessory app with no Dock icon — matches
+   `app.setActivationPolicy(.accessory)` already in `main.swift` — and
+   `CFBundleURLTypes` registering the `ratchet` scheme).
+3. Runs `/usr/bin/touch` on the bundle and, on first build,
+   `lsregister -f` (via `/System/Library/Frameworks/CoreServices.framework/.../lsregister`)
+   so Launch Services picks up the new URL scheme without waiting for a
+   full Finder re-index — otherwise a stale `ratchet://` registration (or
+   none at all) can silently swallow the redirect on first run.
+4. Prints the path to the built `.app` so it can be launched directly
+   (`open .build/Ratchet.app`) — running the raw executable directly
+   (`.build/debug/Ratchet`) still works for everyday non-OAuth iteration,
+   it just won't have a registered URL scheme.
+
+This replaces `main.swift`/`AppDelegate.swift` invocation for anyone
+testing the login flow specifically; day-to-day UI iteration on
+already-authenticated state can keep using `swift run`.
+
 ## OAuth login flow
 
 `FreeAgentAuthenticator` (in `FreeAgentKit`) owns the whole flow:
 
 1. **Authorize**: build
-   `https://api.sandbox.freeagent.com/v2/approve_app?client_id=...&response_type=code&redirect_uri=http://127.0.0.1:53682/callback&state=<random nonce>`
+   `https://api.sandbox.freeagent.com/v2/approve_app?client_id=...&response_type=code&redirect_uri=ratchet://callback&state=<random nonce>`
    and open it via `NSWorkspace.shared.open(_:)`.
-2. **Loopback listener**: `LoopbackOAuthListener`, built on `Network.framework`
-   (`NWListener`), binds `127.0.0.1:53682`, accepts one connection, reads
-   the HTTP request line, extracts `code` and `state` from the query
-   string, verifies `state` matches the nonce sent in step 1 (CSRF guard),
-   writes a minimal `200 OK` HTML response ("You can close this tab and
-   return to Ratchet."), then closes the listener. Exposed as an async
-   function returning the authorization code, with a timeout (e.g. 3
-   minutes) that surfaces as an error if the user never completes the
-   browser flow.
+2. **URL scheme callback**: `AppDelegate.applicationWillFinishLaunching`
+   registers an Apple Event handler
+   (`NSAppleEventManager.shared().setEventHandler(_:andSelector:forEventClass: kInternetEventClass, andEventID: kAEGetURL)`)
+   — the standard macOS mechanism for receiving a custom-URL-scheme open,
+   which fires even if the redirect arrives before the rest of the app has
+   finished launching. The handler extracts the `ratchet://callback?...`
+   URL from the event's direct-object descriptor and forwards it to
+   `FreeAgentAuthenticator`, which parses `code`/`state`, checks `state`
+   against the nonce from step 1 (CSRF guard), and resolves the
+   in-flight `async` authorization call. A timeout (e.g. 3 minutes)
+   surfaces as an error if the user never completes the browser flow —
+   covers both "closed the tab" and "the URL scheme wasn't registered"
+   failure modes.
 3. **Token exchange**: `POST /v2/token_endpoint` with HTTP Basic auth
    (`client_id:client_secret`) and
    `grant_type=authorization_code&code=...&redirect_uri=...`. Response
@@ -235,9 +267,12 @@ if tokenStore.hasValidTokens {
   awkwardness in parallel test runs) drives request-building, pagination,
   401-triggers-refresh-then-retry, and JSON mapping tests without any
   real network access.
-- `LoopbackOAuthListener` is tested by pointing a real
-  `URLSession`/`URLRequest` at `127.0.0.1` on a test-only port, asserting
-  the extracted code/state and the CSRF-mismatch rejection path.
+- The Apple Event handler itself (actual OS delivery of a `ratchet://`
+  open) isn't unit-testable — the URL-parsing/CSRF-check logic it calls
+  into is factored as a pure function (`ratchet://callback?code=...&state=...`
+  → `Result<AuthCode, AuthError>`) and tested directly. End-to-end delivery
+  is verified manually: `open 'ratchet://callback?code=test&state=...'`
+  after building via `scripts/build-app.sh` should reach the running app.
 - `RatchetCoreTests`: existing tests updated for the `async throws`
   protocol (mechanical — add `await`, adjust `nil`-return assertions to
   `XCTAssertThrowsError`). `FakeDataStoreTests` gains cases for the new
@@ -250,8 +285,9 @@ if tokenStore.hasValidTokens {
 
 - Production API (`api.freeagent.com`) — sandbox only; switching later is
   a one-constant change in `FreeAgentEnvironment`.
-- Custom URL scheme redirect / proper `.app` bundling with `Info.plist` —
-  loopback HTTP listener instead, for now.
+- Code signing / notarization of `Ratchet.app` — fine for local `open`-ing
+  on the developer's own Mac; not addressed here since there's no
+  distribution to other machines yet.
 - Rate-limit backoff/retry tuning beyond a single 401-retry — basic
   pagination only.
 - `Launch at login` real implementation — still a no-op toggle in
@@ -260,11 +296,18 @@ if tokenStore.hasValidTokens {
 
 ## Considered and dropped
 
-- **Custom URL scheme (`ratchet://callback`) instead of loopback HTTP.**
-  More "native" but requires bundling the executable as a proper `.app`
-  with `Info.plist`/`CFBundleURLTypes` first — extra scope blocking OAuth
-  from being testable at all. Loopback works today; revisit once the app
-  is bundled for distribution anyway.
+- **Local loopback HTTP listener (`http://127.0.0.1:53682/callback`)
+  instead of a custom URL scheme.** Considered first as a way to avoid
+  bundling work — no `Network.framework` listener code needed, no
+  `Info.plist`. Revisited: the bundling work is small (one shell script)
+  and worth doing now rather than carrying two OAuth-redirect code paths
+  (loopback now, scheme later) across two separate change sets.
+- **Converting to an Xcode project for the bundling step.** Would give
+  Xcode's build UI and integrated debugging, but means maintaining a
+  `.xcodeproj` alongside (or instead of) `Package.swift`, diverging from
+  how the project has been built so far for a benefit not needed yet — a
+  shell script achieves the one thing actually required (a valid
+  `.app` with the right `Info.plist`).
 - **Keychain for `client_id`/`client_secret`.** These are the *app's*
   credentials (like any native OAuth client), not the user's — a
   gitignored source file matches how a solo developer already manages
@@ -279,7 +322,7 @@ if tokenStore.hasValidTokens {
 ## Future additions (not this pass)
 
 - Production environment switch.
-- Proper `.app` bundle + custom URL scheme OAuth redirect.
+- Code signing / notarization for distribution beyond the developer's own Mac.
 - `Launch at login` via `SMAppService`.
 - Background/periodic refresh (currently only on launch, explicit
   "Refresh projects & tasks," and after mutations).
