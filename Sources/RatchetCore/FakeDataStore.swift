@@ -7,6 +7,9 @@ public final class FakeDataStore: DataStore {
     public private(set) var timeslips: [RatchetTimeslip] = []
     public private(set) var lastRefreshedAt: Date?
 
+    /// id of the timeslip with a currently-running timer, if any.
+    private var runningTimeslipId: String?
+
     private let clock: () -> Date
 
     public init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
@@ -34,9 +37,9 @@ public final class FakeDataStore: DataStore {
         status: TaskStatus = .active,
         billingRate: Double? = nil,
         billingPeriod: BillingPeriod? = nil
-    ) -> RatchetTask? {
-        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { return nil }
-        guard let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId }) else { return nil }
+    ) async throws -> RatchetTask {
+        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
+        guard let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId }) else { throw DataStoreError.notFound }
 
         let newTask = RatchetTask(
             id: "task-\(UUID().uuidString.prefix(8))",
@@ -86,7 +89,7 @@ public final class FakeDataStore: DataStore {
         town: String? = nil,
         postcode: String? = nil,
         country: String? = nil
-    ) -> RatchetClient? {
+    ) async throws -> RatchetClient {
         let newClient = RatchetClient(
             id: "client-\(UUID().uuidString.prefix(8))",
             name: name,
@@ -116,8 +119,8 @@ public final class FakeDataStore: DataStore {
         contractPoReference: String? = nil,
         startsOn: Date? = nil,
         endsOn: Date? = nil
-    ) -> RatchetProject? {
-        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { return nil }
+    ) async throws -> RatchetProject {
+        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
 
         let newProject = RatchetProject(
             id: "proj-\(UUID().uuidString.prefix(8))",
@@ -158,11 +161,11 @@ public final class FakeDataStore: DataStore {
         date: Date,
         hours: Double,
         comment: String? = nil
-    ) -> RatchetTimeslip? {
+    ) async throws -> RatchetTimeslip {
         guard let client = clients.first(where: { $0.id == clientId }),
               let project = client.projects.first(where: { $0.id == projectId }),
               project.tasks.contains(where: { $0.id == taskId })
-        else { return nil }
+        else { throw DataStoreError.notFound }
 
         let entry = RatchetTimeslip(
             id: "timeslip-\(UUID().uuidString.prefix(8))",
@@ -177,8 +180,40 @@ public final class FakeDataStore: DataStore {
         return entry
     }
 
-    public func refresh() {
+    public func refresh() async throws {
         refreshCount += 1
         lastRefreshedAt = clock()
+    }
+
+    public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        guard let client = clients.first(where: { $0.id == clientId }),
+              let project = client.projects.first(where: { $0.id == projectId }),
+              project.tasks.contains(where: { $0.id == taskId })
+        else { throw DataStoreError.notFound }
+
+        if let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) {
+            _ = index // previous timer implicitly stops when a new one starts
+        }
+
+        let entry = RatchetTimeslip(
+            id: "timeslip-\(UUID().uuidString.prefix(8))",
+            clientId: clientId,
+            projectId: projectId,
+            taskId: taskId,
+            date: clock(),
+            hours: 0,
+            comment: nil
+        )
+        timeslips.append(entry)
+        runningTimeslipId = entry.id
+        return entry
+    }
+
+    public func stopTimer() async throws -> RatchetTimeslip? {
+        guard let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) else {
+            return nil
+        }
+        self.runningTimeslipId = nil
+        return timeslips[index]
     }
 }
