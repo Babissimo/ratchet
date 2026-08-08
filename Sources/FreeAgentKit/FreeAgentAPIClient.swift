@@ -179,8 +179,7 @@ public final class FreeAgentAPIClient {
                 case expiresIn = "expires_in"
             }
         }
-        let decoder = JSONDecoder()
-        let response = try decoder.decode(TokenResponse.self, from: data)
+        let response = try decode(data, as: TokenResponse.self)
         return FreeAgentTokens(
             accessToken: response.accessToken,
             refreshToken: response.refreshToken,

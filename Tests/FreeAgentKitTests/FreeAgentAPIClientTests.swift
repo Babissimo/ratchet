@@ -97,6 +97,29 @@ final class FreeAgentAPIClientTests: XCTestCase {
         store.clear()
     }
 
+    func test_authenticatedRequest_stopsAfterOneRetryAndThrowsUnauthorizedOnSecond401() async {
+        struct Thing: Decodable {}
+        let transport = StubTransport()
+        transport.responses = [
+            (401, Data()), // first attempt rejected
+            (200, Data(#"{"access_token":"refreshed","refresh_token":"refreshed-r","expires_in":3600}"#.utf8)), // refresh
+            (401, Data()), // retried request rejected again
+        ]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        do {
+            _ = try await client.get("things/1") as Thing
+            XCTFail("expected an error")
+        } catch FreeAgentError.unauthorized {
+            // expected
+        } catch {
+            XCTFail("expected FreeAgentError.unauthorized, got \(error)")
+        }
+        XCTAssertEqual(transport.calls.count, 3)
+        store.clear()
+    }
+
     func test_apiError_forNon401FailureStatus_throwsApiErrorWithMessage() async {
         let transport = StubTransport()
         transport.responses = [(422, Data(#"{"error":"Name can't be blank"}"#.utf8))]
