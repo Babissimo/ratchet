@@ -9,10 +9,14 @@ final class StatusItemControllerTests: XCTestCase {
     private var controller: StatusItemController?
 
     override func tearDown() {
-        if let controller {
-            NSStatusBar.system.removeStatusItem(controller.statusItemForTesting)
+        // tearDown() is nonisolated (inherited from XCTestCase), but this class is @MainActor —
+        // its body touches main-actor state, so it must run inside an isolated context explicitly.
+        MainActor.assumeIsolated {
+            if let controller {
+                NSStatusBar.system.removeStatusItem(controller.statusItemForTesting)
+            }
+            controller = nil
         }
-        controller = nil
         super.tearDown()
     }
 
