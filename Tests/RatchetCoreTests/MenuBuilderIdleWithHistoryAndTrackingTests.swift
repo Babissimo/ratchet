@@ -2,6 +2,9 @@ import XCTest
 import AppKit
 @testable import RatchetCore
 
+// Exercises @MainActor-isolated types (see DataStore's isolation), so the whole case is pinned
+// to the main actor rather than annotating every test method.
+@MainActor
 final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
     private let sampleTask = TrackedTaskRef(
         clientId: "client-1", clientName: "Acme",

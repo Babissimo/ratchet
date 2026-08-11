@@ -20,6 +20,9 @@ private final class StubTransport: FreeAgentTransport {
     }
 }
 
+// Exercises @MainActor-isolated types (see DataStore's isolation), so the whole case is pinned
+// to the main actor rather than annotating every test method.
+@MainActor
 final class FreeAgentAPIClientTests: XCTestCase {
     private func makeStore(expired: Bool = false) -> KeychainTokenStore {
         let store = KeychainTokenStore(service: "com.ratchet.freeagent.test.\(UUID().uuidString)")

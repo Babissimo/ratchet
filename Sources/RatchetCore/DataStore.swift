@@ -1,5 +1,11 @@
 import Foundation
 
+/// `@MainActor`-isolated because every consumer is UI code (`StatusItemController`,
+/// `MenuBuilder`) that reads these properties on the main thread. Isolating the protocol
+/// keeps conforming stores' mutations serialized on the main actor — only the actual
+/// network awaits inside implementations suspend — instead of letting `async` methods
+/// hop onto a background executor and mutate shared state while the menu reads it.
+@MainActor
 public protocol DataStore: AnyObject {
     var clients: [RatchetClient] { get }
     var accountEmail: String { get }

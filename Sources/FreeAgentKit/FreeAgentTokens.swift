@@ -1,6 +1,8 @@
 import Foundation
 
-public struct FreeAgentTokens: Codable, Equatable {
+/// `Sendable` because the shared token-refresh `Task` in `FreeAgentAPIClient` hands its result
+/// back across an actor boundary — trivially safe, since every stored property is immutable.
+public struct FreeAgentTokens: Codable, Equatable, Sendable {
     public let accessToken: String
     public let refreshToken: String
     public let expiresAt: Date

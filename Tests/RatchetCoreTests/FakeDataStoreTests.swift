@@ -1,6 +1,9 @@
 import XCTest
 @testable import RatchetCore
 
+// Exercises @MainActor-isolated types (see DataStore's isolation), so the whole case is pinned
+// to the main actor rather than annotating every test method.
+@MainActor
 final class FakeDataStoreTests: XCTestCase {
     func test_seeded_hasExpectedClientsAndAccountEmail() {
         let store = FakeDataStore.seeded()

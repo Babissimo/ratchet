@@ -1,5 +1,6 @@
 import AppKit
 
+@MainActor
 public enum MenuBuilder {
     public static func build(state: AppState, dataStore: DataStore, actions: MenuActions, now: () -> Date = Date.init) -> NSMenu {
         switch state.screen {

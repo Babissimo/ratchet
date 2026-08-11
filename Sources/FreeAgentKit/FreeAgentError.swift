@@ -1,4 +1,5 @@
 import Foundation
+import RatchetCore
 
 public enum FreeAgentError: Error, CustomStringConvertible {
     case network(Error)
@@ -26,5 +27,15 @@ public enum FreeAgentError: Error, CustomStringConvertible {
         case .stateMismatch:
             return "login response didn't match the request (possible tampering) — please try again"
         }
+    }
+}
+
+extension FreeAgentError: SessionExpiredError {
+    /// `.unauthorized` is thrown both when no tokens are stored and when FreeAgent rejects the
+    /// refresh token (revoked, or already rotated away). Either way the stored credentials are
+    /// dead and the app must drop them and send the user back through login.
+    public var isSessionExpired: Bool {
+        if case .unauthorized = self { return true }
+        return false
     }
 }

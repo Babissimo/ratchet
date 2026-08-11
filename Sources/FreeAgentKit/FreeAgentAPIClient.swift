@@ -18,6 +18,11 @@ public struct URLSessionTransport: FreeAgentTransport {
     }
 }
 
+/// `@MainActor`-isolated for the same reason as `DataStore` (its only consumers are the
+/// main-actor `FreeAgentDataStore` and the login flow), and because `inFlightRefresh` below is
+/// mutable shared state that must not be read/written concurrently. Only the `await`s on the
+/// transport actually suspend, so this costs nothing in practice.
+@MainActor
 public final class FreeAgentAPIClient {
     private let environment: FreeAgentEnvironment
     private let tokenStore: KeychainTokenStore
@@ -106,11 +111,42 @@ public final class FreeAgentAPIClient {
 
     // MARK: - Private helpers
 
+    /// Tracks an in-flight token refresh so concurrent callers share one exchange.
+    ///
+    /// FreeAgent rotates the refresh token on every use, so if several in-flight requests each
+    /// kicked off their own `refreshTokens` call, only the first would succeed — the rest would
+    /// get `invalid_grant`, and a late loser could overwrite the good tokens in the Keychain and
+    /// log the user out. Every refresh now goes through `refreshTokensShared`, which starts at
+    /// most one exchange at a time.
+    private var inFlightRefresh: Task<FreeAgentTokens, Error>?
+
+    /// Serializing point for token refresh. If an exchange is already running, awaits it instead
+    /// of starting a second one. Callers pass the refresh token they *saw*; if it's stale (the
+    /// shared refresh already rotated it), the freshly stored tokens are returned instead of
+    /// burning the rotated token a second time.
+    private func refreshTokensShared(currentRefreshToken: String) async throws -> FreeAgentTokens {
+        if let existing = inFlightRefresh {
+            return try await existing.value
+        }
+        // Another caller may have completed a refresh between our token load and now, in which
+        // case the stored refresh token has already rotated away from ours — reuse theirs.
+        if let stored = tokenStore.load(), stored.refreshToken != currentRefreshToken, !stored.isExpired {
+            return stored
+        }
+        let task = Task<FreeAgentTokens, Error> { [self] in
+            let refreshed = try await refreshTokens(currentRefreshToken)
+            tokenStore.save(refreshed)
+            return refreshed
+        }
+        inFlightRefresh = task
+        defer { inFlightRefresh = nil }
+        return try await task.value
+    }
+
     private func authenticatedRequest(path: String, method: String, query: [URLQueryItem], body: Data?, isRetry: Bool = false) async throws -> Data {
         guard var tokens = tokenStore.load() else { throw FreeAgentError.unauthorized }
         if tokens.isExpired {
-            tokens = try await refreshTokens(tokens.refreshToken)
-            tokenStore.save(tokens)
+            tokens = try await refreshTokensShared(currentRefreshToken: tokens.refreshToken)
         }
 
         var url = path.hasPrefix("http") ? URL(string: path)! : environment.apiBaseURL.appendingPathComponent(path)
@@ -130,8 +166,7 @@ public final class FreeAgentAPIClient {
         let (data, response) = try await send(request)
 
         if response.statusCode == 401 && !isRetry {
-            let refreshed = try await refreshTokens(tokens.refreshToken)
-            tokenStore.save(refreshed)
+            _ = try await refreshTokensShared(currentRefreshToken: tokens.refreshToken)
             return try await authenticatedRequest(path: path, method: method, query: query, body: body, isRetry: true)
         }
         try throwIfError(status: response.statusCode, data: data)
@@ -151,8 +186,55 @@ public final class FreeAgentAPIClient {
     private func throwIfError(status: Int, data: Data) throws {
         guard status >= 400 else { return }
         if status == 401 { throw FreeAgentError.unauthorized }
-        let message = (try? decode(data, as: [String: String].self))?["error"]
-        throw FreeAgentError.apiError(status: status, message: message)
+        throw FreeAgentError.apiError(status: status, message: Self.errorMessage(from: data))
+    }
+
+    /// Best-effort extraction of a human-readable reason from an error body. FreeAgent isn't
+    /// consistent: the OAuth token endpoint returns a flat `{"error": "..."}`, while API
+    /// validation failures (the 422s the create-client/project/task forms hit) nest the message
+    /// under `errors`. Both shapes are tried, plus a bare top-level `message`; anything
+    /// unrecognised yields nil so the caller falls back to "status NNN".
+    nonisolated private static func errorMessage(from data: Data) -> String? {
+        /// `{"errors": {"error": {"message": "..."}}}` — the nested validation-error shape.
+        struct NestedErrors: Decodable {
+            struct Errors: Decodable {
+                struct Detail: Decodable { let message: String }
+                let error: Detail
+            }
+            let errors: Errors
+        }
+        /// `{"errors": [{"message": "..."}, ...]}` — the multi-error variant.
+        struct NestedErrorList: Decodable {
+            struct Detail: Decodable { let message: String }
+            let errors: [Detail]
+        }
+        /// `{"error": "..."}` (OAuth) or `{"message": "..."}` (occasional plain shape).
+        struct Flat: Decodable {
+            let error: String?
+            let message: String?
+            let errorDescription: String?
+
+            enum CodingKeys: String, CodingKey {
+                case error, message
+                case errorDescription = "error_description"
+            }
+        }
+
+        let decoder = JSONDecoder()
+        if let nested = try? decoder.decode(NestedErrors.self, from: data) {
+            return nested.errors.error.message
+        }
+        if let list = try? decoder.decode(NestedErrorList.self, from: data), !list.errors.isEmpty {
+            return list.errors.map(\.message).joined(separator: "\n")
+        }
+        if let flat = try? decoder.decode(Flat.self, from: data) {
+            // `error_description` is the more descriptive half of an OAuth error pair.
+            if let description = flat.errorDescription, let error = flat.error {
+                return "\(error): \(description)"
+            }
+            return flat.errorDescription ?? flat.error ?? flat.message
+        }
+        return nil
     }
 
     private func decode<T: Decodable>(_ data: Data) throws -> T {

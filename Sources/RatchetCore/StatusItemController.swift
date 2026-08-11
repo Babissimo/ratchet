@@ -1,13 +1,22 @@
 // Sources/RatchetCore/StatusItemController.swift
 import AppKit
 
+@MainActor
 public final class StatusItemController {
     public typealias LoginHandler = () async throws -> Void
+
+    /// Called after a login's follow-up `refresh()` succeeds, to adopt whatever timer FreeAgent
+    /// says is already running. Injected because "which timeslip is running" lives on the
+    /// concrete `FreeAgentDataStore`, not on the `DataStore` protocol — see
+    /// `restoreRunningTimer(from:into:)` in the app target, which both this and the launch-time
+    /// restore in `AppDelegate` call.
+    public typealias RestoreRunningTimerHandler = () -> Void
 
     private let statusItem: NSStatusItem
     private let appState: AppState
     private let dataStore: DataStore
     private let performLogin: LoginHandler
+    private let restoreRunningTimer: RestoreRunningTimerHandler
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
     private var isLoggingIn = false
@@ -22,12 +31,14 @@ public final class StatusItemController {
         appState: AppState,
         dataStore: DataStore,
         statusBar: NSStatusBar = .system,
-        performLogin: @escaping LoginHandler = {}
+        performLogin: @escaping LoginHandler = {},
+        restoreRunningTimer: @escaping RestoreRunningTimerHandler = {}
     ) {
         self.appState = appState
         self.dataStore = dataStore
         self.statusItem = statusBar.statusItem(withLength: NSStatusItem.squareLength)
         self.performLogin = performLogin
+        self.restoreRunningTimer = restoreRunningTimer
         appState.onChange = { [weak self] in self?.rebuild() }
         rebuild()
     }
@@ -44,8 +55,16 @@ public final class StatusItemController {
                 defer { self.isLoggingIn = false }
                 do {
                     try await self.performLogin()
-                    self.appState.logIn()
+                    // Refresh BEFORE flipping appState to logged-in: if the fetch fails we're
+                    // still honestly in the logged-out state (so "Couldn't log in" is accurate
+                    // and the Log In item is still there to retry), and the user never sees a
+                    // flash of a logged-in-but-empty menu in the success case either.
                     try await self.dataStore.refresh()
+                    self.appState.logIn()
+                    // Same restore the launch path does — without this, logging out and back in
+                    // while a FreeAgent timer runs showed idle, while quit-and-relaunch showed
+                    // tracking, from identical server state.
+                    self.restoreRunningTimer()
                     self.rebuild()
                 } catch {
                     self.presentAPIError(error, action: "log in")
@@ -53,8 +72,7 @@ public final class StatusItemController {
             }
         },
         logOut: { [weak self] in
-            self?.appState.logOut()
-            self?.onLogOut?()
+            self?.performLogOut()
         },
         startTracking: { [weak self] task in
             guard let self else { return }
@@ -118,7 +136,37 @@ public final class StatusItemController {
         }
     )
 
+    /// Drops local session state and clears stored credentials via `onLogOut`. The single place
+    /// "log out" happens, so the menu-driven Log Out and the forced logout below can't diverge.
+    private func performLogOut() {
+        appState.logOut()
+        onLogOut?()
+    }
+
+    /// Forces a logout after the session turned out to be dead, then tells the user once.
+    /// Exposed so `AppDelegate`'s launch-time restore can route an `.unauthorized` here rather
+    /// than swallowing it and leaving a logged-in-looking, permanently empty menu.
+    public func handleSessionExpired() {
+        performLogOut()
+        rebuild()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Signed out of FreeAgent"
+        alert.informativeText = "Your FreeAgent session has expired, so Ratchet signed you out. Choose \"Log in with browser\" to reconnect."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
     private func presentAPIError(_ error: Error, action: String) {
+        // A dead session isn't a per-action failure — no amount of retrying "start tracking"
+        // fixes it. Clear the credentials, drop to the logged-out menu, and say so once, instead
+        // of showing "Couldn't start tracking: session expired" over a still-logged-in menu with
+        // no way to re-trigger login.
+        if error.indicatesSessionExpired {
+            handleSessionExpired()
+            return
+        }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn't \(action)"
@@ -175,9 +223,13 @@ public final class StatusItemController {
         elapsedTimer = nil
         if case .tracking(_, let startedAt) = appState.screen {
             let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                guard case .tracking = self.appState.screen else { return }
-                self.elapsedMenuItem?.title = ElapsedTimeFormatter.format(seconds: Date().timeIntervalSince(startedAt))
+                // Scheduled on RunLoop.main below, so this always fires on the main thread;
+                // `assumeIsolated` tells the compiler what the runtime already guarantees.
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    guard case .tracking = self.appState.screen else { return }
+                    self.elapsedMenuItem?.title = ElapsedTimeFormatter.format(seconds: Date().timeIntervalSince(startedAt))
+                }
             }
             // Menus run the run loop in .eventTracking mode while open (the only time the
             // elapsed line is visible), so .common is required for the tick to fire then.
@@ -810,11 +862,11 @@ public final class StatusItemController {
     /// it, because NSPopUpButton's natural/fitting size can come back wrong when measured
     /// before the view is attached to a real window — pinning width up front sidesteps that
     /// and leaves AppKit only needing to resolve height, which is far more reliable.
-    private static let formWidth: CGFloat = 330
+    nonisolated private static let formWidth: CGFloat = 330
 
     /// Wide enough for the longest label ("Billing period *", bold) without clipping its
     /// trailing asterisk.
-    private static let labelWidth: CGFloat = 120
+    nonisolated private static let labelWidth: CGFloat = 120
 
     /// NSAlert sizes its accessory view reliably only when that view is legacy frame-based
     /// (translatesAutoresizingMaskIntoConstraints == true) — an Auto Layout-only view handed

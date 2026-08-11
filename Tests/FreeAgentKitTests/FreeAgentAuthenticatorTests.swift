@@ -1,6 +1,9 @@
 import XCTest
 @testable import FreeAgentKit
 
+// Exercises @MainActor-isolated types (see DataStore's isolation), so the whole case is pinned
+// to the main actor rather than annotating every test method.
+@MainActor
 final class FreeAgentAuthenticatorTests: XCTestCase {
     func test_parse_extractsCodeAndState() {
         let url = URL(string: "ratchet://callback?code=abc123&state=xyz")!

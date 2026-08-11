@@ -1,5 +1,6 @@
 import Foundation
 
+@MainActor
 public final class FakeDataStore: DataStore {
     public private(set) var clients: [RatchetClient]
     public let accountEmail: String
@@ -191,10 +192,8 @@ public final class FakeDataStore: DataStore {
               project.tasks.contains(where: { $0.id == taskId })
         else { throw DataStoreError.notFound }
 
-        if let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) {
-            _ = index // previous timer implicitly stops when a new one starts
-        }
-
+        // Starting a new timer implicitly stops whichever one was running: `runningTimeslipId`
+        // is simply reassigned below, and the old entry keeps whatever hours it had accrued.
         let entry = RatchetTimeslip(
             id: "timeslip-\(UUID().uuidString.prefix(8))",
             clientId: clientId,

@@ -1,12 +1,18 @@
 import Foundation
 import RatchetCore
 
+@MainActor
 public final class FreeAgentDataStore: DataStore {
     public private(set) var clients: [RatchetClient] = []
     public private(set) var accountEmail: String = ""
     public private(set) var timeslips: [RatchetTimeslip] = []
     public private(set) var lastRefreshedAt: Date?
     public private(set) var currentRunningTimeslip: RatchetTimeslip?
+
+    /// How far back `refresh()` fetches timeslips for the "Recent time entries" menu. The menu
+    /// only shows the last 20 entries anyway, so this just needs to comfortably cover
+    /// "recently logged, including back-dated entries" without fetching a whole history.
+    private static let recentTimeslipWindowDays: Double = 14
 
     private let apiClient: FreeAgentAPIClient
     private let clock: () -> Date
@@ -29,7 +35,10 @@ public final class FreeAgentDataStore: DataStore {
         let projects: [FreeAgentProjectDTO] = try await apiClient.getList("projects", listKey: "projects")
         let tasks: [FreeAgentTaskDTO] = try await apiClient.getList("tasks", listKey: "tasks")
 
-        projectToClientId = Dictionary(uniqueKeysWithValues: projects.map { ($0.url, $0.contact) })
+        // `uniquingKeysWith` rather than `uniqueKeysWithValues`: the latter traps at runtime if
+        // pagination ever hands back the same project URL twice (e.g. a page boundary served
+        // twice). "Last write wins" is a fine outcome for a duplicate of the same project.
+        projectToClientId = Dictionary(projects.map { ($0.url, $0.contact) }, uniquingKeysWith: { _, new in new })
 
         let tasksByProject = Dictionary(grouping: tasks, by: \.project)
         let projectsByContact = Dictionary(grouping: projects, by: \.contact)
@@ -42,15 +51,19 @@ public final class FreeAgentDataStore: DataStore {
             return contact.toRatchetClient(projects: contactProjects)
         }
 
+        // A trailing window rather than today-only: the menu's "Recent time entries" list is
+        // meant to be a short history, and "Log past time" writes entries dated in the past —
+        // with a today-only fetch those vanished from the menu on the very next refresh.
         let today = todayString()
-        let todaysTimeslips: [FreeAgentTimeslipDTO] = try await apiClient.getList(
+        let windowStart = dateString(clock().addingTimeInterval(-Self.recentTimeslipWindowDays * 24 * 60 * 60))
+        let recentTimeslips: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
-                URLQueryItem(name: "from_date", value: today),
+                URLQueryItem(name: "from_date", value: windowStart),
                 URLQueryItem(name: "to_date", value: today),
                 URLQueryItem(name: "user", value: currentUserURL),
             ], listKey: "timeslips"
         )
-        timeslips = todaysTimeslips.map { resolvedTimeslip($0) }
+        timeslips = recentTimeslips.map { resolvedTimeslip($0) }
 
         let runningTimeslips: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
