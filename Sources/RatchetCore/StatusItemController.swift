@@ -2,19 +2,31 @@
 import AppKit
 
 public final class StatusItemController {
+    public typealias LoginHandler = () async throws -> Void
+
     private let statusItem: NSStatusItem
     private let appState: AppState
     private let dataStore: DataStore
+    private let performLogin: LoginHandler
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
     public var statusItemForTesting: NSStatusItem { statusItem }
 
-    public init(appState: AppState, dataStore: DataStore, statusBar: NSStatusBar = .system) {
+    /// Invoked after a successful `appState.logOut()`, e.g. to clear stored credentials.
+    public var onLogOut: (() -> Void)?
+
+    public init(
+        appState: AppState,
+        dataStore: DataStore,
+        statusBar: NSStatusBar = .system,
+        performLogin: @escaping LoginHandler = {}
+    ) {
         self.appState = appState
         self.dataStore = dataStore
         self.statusItem = statusBar.statusItem(withLength: NSStatusItem.squareLength)
+        self.performLogin = performLogin
         appState.onChange = { [weak self] in self?.rebuild() }
         rebuild()
     }
@@ -24,8 +36,23 @@ public final class StatusItemController {
     }
 
     private lazy var actions: MenuActions = MenuActions(
-        logIn: { [weak self] in self?.appState.logIn() },
-        logOut: { [weak self] in self?.appState.logOut() },
+        logIn: { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    try await self.performLogin()
+                    self.appState.logIn()
+                    try await self.dataStore.refresh()
+                    self.rebuild()
+                } catch {
+                    self.presentAPIError(error, action: "log in")
+                }
+            }
+        },
+        logOut: { [weak self] in
+            self?.appState.logOut()
+            self?.onLogOut?()
+        },
         startTracking: { [weak self] task in
             guard let self else { return }
             Task { @MainActor in
