@@ -10,6 +10,7 @@ public final class StatusItemController {
     private let performLogin: LoginHandler
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
+    private var isLoggingIn = false
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
     public var statusItemForTesting: NSStatusItem { statusItem }
@@ -37,8 +38,10 @@ public final class StatusItemController {
 
     private lazy var actions: MenuActions = MenuActions(
         logIn: { [weak self] in
-            guard let self else { return }
+            guard let self, !self.isLoggingIn else { return }
+            self.isLoggingIn = true
             Task { @MainActor in
+                defer { self.isLoggingIn = false }
                 do {
                     try await self.performLogin()
                     self.appState.logIn()
@@ -123,6 +126,14 @@ public final class StatusItemController {
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    /// Rebuilds the menu from the current `appState`/`dataStore` contents. Exposed for callers
+    /// (e.g. `AppDelegate`'s launch-time restore) that mutate `dataStore` directly — such
+    /// mutations don't route through `appState.onChange`, so the menu wouldn't otherwise
+    /// reflect them until the next `appState` change or a manual "Refresh" click.
+    public func refreshMenu() {
+        rebuild()
     }
 
     private func rebuild() {

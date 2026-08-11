@@ -48,6 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                         appState.startTracking(ref, startedAt: running.date)
                     }
+                    // appState.logIn() (above) fired rebuild() before this refresh completed, so
+                    // the menu was built from an empty, unrefreshed dataStore. startTracking above
+                    // triggers its own rebuild via appState.onChange, but when no timer is running
+                    // nothing further mutates appState — without this, the freshly-fetched
+                    // clients/projects/tasks and "Last refreshed at" would stay hidden until the
+                    // user manually clicks "Refresh projects & tasks".
+                    controller.refreshMenu()
                 } catch {
                     // Launch-time refresh failure isn't fatal — the user can
                     // trigger "Refresh projects & tasks" manually; surfacing
