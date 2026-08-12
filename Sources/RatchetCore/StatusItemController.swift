@@ -614,9 +614,12 @@ public final class StatusItemController {
         let countryField = makeField("Country", toolTip: "Country.")
 
         let stack = NSStackView(views: [
-            labeledRow("Organisation *", orgField, required: true),
-            labeledRow("First name *", firstNameField, required: true),
-            labeledRow("Last name *", lastNameField, required: true),
+            // None of these three is individually required — the rule is "organisation name,
+            // OR both first and last name" (see the alert's informativeText above), which the
+            // per-field bold-asterisk treatment can't express, so none of them gets it.
+            labeledRow("Organisation", orgField),
+            labeledRow("First name", firstNameField),
+            labeledRow("Last name", lastNameField),
             labeledRow("Email", emailField),
             labeledRow("Phone", phoneField),
             labeledRow("Address", address1Field),
