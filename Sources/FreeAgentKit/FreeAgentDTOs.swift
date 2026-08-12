@@ -1,5 +1,37 @@
 import Foundation
 
+/// FreeAgent isn't always consistent about whether a numeric-looking field comes back as a JSON
+/// string or a JSON number for the same logical value across endpoints/responses (observed:
+/// `budget` comes back as a bare number on project creation, while `normal_billing_rate` and
+/// `hours_per_day` come back as strings in that same response). Decodes either shape into a
+/// `String`, matching what the rest of this file already expects for these fields.
+@propertyWrapper
+public struct LenientNumericString: Codable {
+    public let wrappedValue: String?
+
+    public init(wrappedValue: String?) {
+        self.wrappedValue = wrappedValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) {
+            wrappedValue = string
+        } else if let double = try? container.decode(Double.self) {
+            wrappedValue = String(double)
+        } else if container.decodeNil() {
+            wrappedValue = nil
+        } else {
+            wrappedValue = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(wrappedValue)
+    }
+}
+
 /// FreeAgent addresses every resource by its full URL, e.g.
 /// "https://api.sandbox.freeagent.com/v2/projects/1". Ratchet's models use
 /// that URL directly as `id`, since FreeAgent's own filter/reference
@@ -34,7 +66,7 @@ public struct FreeAgentProjectDTO: Codable {
     public let name: String
     public let status: String
     public let currency: String
-    public let budget: String?
+    @LenientNumericString public var budget: String?
     public let budgetUnits: String?
     public let hoursPerDay: String?
     public let normalBillingRate: String?

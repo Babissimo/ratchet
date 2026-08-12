@@ -45,6 +45,53 @@ final class FreeAgentModelMappingTests: XCTestCase {
         XCTAssertNil(project.endsOn)
     }
 
+    func test_projectDTO_decodesBudgetAsRawJSONNumber() throws {
+        // FreeAgent isn't consistent: observed against the sandbox API, `budget` comes back as a
+        // bare JSON number (e.g. `"budget":0`) on project creation, while `normal_billing_rate`
+        // and `hours_per_day` come back as strings in that same response.
+        let json = Data(#"""
+        {
+            "url": "https://api.sandbox.freeagent.com/v2/projects/1",
+            "contact": "https://api.sandbox.freeagent.com/v2/contacts/1",
+            "name": "Website Redesign",
+            "status": "Active",
+            "currency": "GBP",
+            "budget": 0,
+            "budget_units": "Hours",
+            "hours_per_day": "8.0",
+            "normal_billing_rate": "50.0",
+            "billing_period": "hour",
+            "uses_project_invoice_sequence": false
+        }
+        """#.utf8)
+
+        let dto = try JSONDecoder().decode(FreeAgentProjectDTO.self, from: json)
+
+        XCTAssertEqual(dto.budget, "0")
+    }
+
+    func test_projectDTO_stillDecodesBudgetAsString() throws {
+        let json = Data(#"""
+        {
+            "url": "https://api.sandbox.freeagent.com/v2/projects/1",
+            "contact": "https://api.sandbox.freeagent.com/v2/contacts/1",
+            "name": "Website Redesign",
+            "status": "Active",
+            "currency": "GBP",
+            "budget": "1500.5",
+            "budget_units": "Hours",
+            "hours_per_day": "8.0",
+            "normal_billing_rate": "50.0",
+            "billing_period": "hour",
+            "uses_project_invoice_sequence": false
+        }
+        """#.utf8)
+
+        let dto = try JSONDecoder().decode(FreeAgentProjectDTO.self, from: json)
+
+        XCTAssertEqual(dto.budget, "1500.5")
+    }
+
     func test_taskDTO_mapsBillingFields() {
         let dto = FreeAgentTaskDTO(
             url: "https://api.sandbox.freeagent.com/v2/tasks/1",
