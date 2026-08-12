@@ -142,19 +142,112 @@ final class FreeAgentAPIClientTests: XCTestCase {
         store.clear()
     }
 
-    func test_post_wrapsBodyInEnvelopeKey() async throws {
+    func test_post_wrapsBodyInEnvelopeKeyAndUnwrapsTheResponseEnvelope() async throws {
         struct CreateBody: Encodable { let name: String }
-        struct Created: Decodable { let name: String }
+        struct Created: Decodable, Equatable { let name: String }
         let transport = StubTransport()
-        transport.responses = [(201, Data(#"{"name":"new thing"}"#.utf8))]
+        // FreeAgent wraps single-resource responses under the same key as the request body,
+        // e.g. POST /contacts -> {"contact": {...}}, not a bare object.
+        transport.responses = [(201, Data(#"{"thing":{"name":"new thing"}}"#.utf8))]
         let store = makeStore()
         let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
 
-        _ = try await client.post("things", envelopeKey: "thing", body: CreateBody(name: "new thing")) as Created
+        let result = try await client.post("things", envelopeKey: "thing", body: CreateBody(name: "new thing")) as Created
 
+        XCTAssertEqual(result, Created(name: "new thing"))
         let sentBody = transport.calls[0].request.httpBody!
         let json = try JSONSerialization.jsonObject(with: sentBody) as! [String: Any]
         XCTAssertNotNil(json["thing"])
+        store.clear()
+    }
+
+    func test_post_withResponseEnvelopeKey_unwrapsUnderADifferentKeyThanTheRequest() async throws {
+        // Regression test for POST /timeslips/:id/timer specifically: the request is
+        // conventionally wrapped as {"timer": {}}, but observed against the real sandbox API,
+        // the response comes back wrapped as {"timeslip": {...}} — the request and response
+        // envelope keys aren't always the same.
+        struct EmptyBody: Encodable {}
+        struct Timeslip: Decodable, Equatable { let hours: String }
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"timeslip":{"hours":"0.5"}}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        let result = try await client.post(
+            "timeslips/1/timer", envelopeKey: "timer", responseEnvelopeKey: "timeslip", body: EmptyBody()
+        ) as Timeslip
+
+        XCTAssertEqual(result, Timeslip(hours: "0.5"))
+        let sentBody = transport.calls[0].request.httpBody!
+        let json = try JSONSerialization.jsonObject(with: sentBody) as! [String: Any]
+        XCTAssertNotNil(json["timer"], "request body should still use envelopeKey, not responseEnvelopeKey")
+        store.clear()
+    }
+
+    func test_get_withEnvelopeKey_unwrapsSingleResourceResponse() async throws {
+        struct User: Decodable, Equatable { let email: String }
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"user":{"email":"al@example.com"}}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        let result: User = try await client.get("users/me", envelopeKey: "user")
+
+        XCTAssertEqual(result, User(email: "al@example.com"))
+        store.clear()
+    }
+
+    func test_get_withEnvelopeKey_throwsDecodingErrorWhenKeyMissing() async {
+        struct User: Decodable { let email: String }
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"wrong_key":{"email":"al@example.com"}}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        do {
+            _ = try await client.get("users/me", envelopeKey: "user") as User
+            XCTFail("expected FreeAgentError.decoding")
+        } catch FreeAgentError.decoding {
+            // expected
+        } catch {
+            XCTFail("expected FreeAgentError.decoding, got \(error)")
+        }
+        store.clear()
+    }
+
+    func test_get_decodesISO8601DatesWithFractionalSeconds() async throws {
+        // FreeAgent's timer `start_from` comes back with fractional seconds
+        // (e.g. "2026-08-12T15:51:37.435Z"), which plain JSONDecoder.dateDecodingStrategy
+        // = .iso8601 rejects — regression test for that.
+        struct Timestamped: Decodable { let at: Date }
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"at":"2026-08-12T15:51:37.435Z"}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        let result: Timestamped = try await client.get("things/1")
+
+        // Truncate to millisecond precision for comparison — floating point round-tripping
+        // through TimeInterval can differ in the sub-millisecond range.
+        let expected = ISO8601DateFormatter()
+        expected.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        XCTAssertEqual(
+            result.at.timeIntervalSince1970.rounded(),
+            expected.date(from: "2026-08-12T15:51:37.435Z")!.timeIntervalSince1970.rounded()
+        )
+        store.clear()
+    }
+
+    func test_get_stillDecodesISO8601DatesWithoutFractionalSeconds() async throws {
+        struct Timestamped: Decodable { let at: Date }
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"at":"2026-08-12T15:51:37Z"}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        let result: Timestamped = try await client.get("things/1")
+
+        XCTAssertEqual(result.at, ISO8601DateFormatter().date(from: "2026-08-12T15:51:37Z"))
         store.clear()
     }
 }

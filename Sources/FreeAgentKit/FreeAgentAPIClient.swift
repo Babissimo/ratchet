@@ -1,5 +1,12 @@
 import Foundation
 
+/// Thrown by `decodeEnveloped` when the response's top-level key doesn't match what was expected
+/// (e.g. requesting `envelopeKey: "user"` but the server returned some other top-level key).
+private struct MissingEnvelopeKey: Error, CustomStringConvertible {
+    let envelopeKey: String
+    var description: String { "expected top-level key \"\(envelopeKey)\" in the response" }
+}
+
 /// Abstraction over "send an HTTP request, get back a response" so tests
 /// can inject a stub instead of hitting the network.
 public protocol FreeAgentTransport {
@@ -30,21 +37,49 @@ public final class FreeAgentAPIClient {
     private let jsonDecoder: JSONDecoder
     private let jsonEncoder: JSONEncoder
 
+    // Read-only after init (used only for parsing, in a decode closure that may run off the
+    // main actor) — safe to share across isolation contexts despite ISO8601DateFormatter not
+    // being Sendable.
+    nonisolated(unsafe) private static let iso8601Formatter = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let iso8601FractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     public init(environment: FreeAgentEnvironment, tokenStore: KeychainTokenStore, transport: FreeAgentTransport = URLSessionTransport()) {
         self.environment = environment
         self.tokenStore = tokenStore
         self.transport = transport
         self.jsonDecoder = JSONDecoder()
-        self.jsonDecoder.dateDecodingStrategy = .iso8601
+        // Plain `.iso8601` uses ISO8601DateFormatter's default options, which reject fractional
+        // seconds — but FreeAgent's timer `start_from` comes back as e.g.
+        // "2026-08-12T15:51:37.435Z", which has them. Try strict first (cheaper, no fractional
+        // formatter allocation), fall back to fractional-seconds parsing.
+        self.jsonDecoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            if let date = FreeAgentAPIClient.iso8601Formatter.date(from: string) {
+                return date
+            }
+            if let date = FreeAgentAPIClient.iso8601FractionalFormatter.date(from: string) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Expected an ISO8601-formatted date, got \"\(string)\"")
+        }
         self.jsonEncoder = JSONEncoder()
         self.jsonEncoder.dateEncodingStrategy = .iso8601
     }
 
     // MARK: - Authenticated requests
 
-    public func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+    /// `envelopeKey`, when given, unwraps a single-resource response the same way FreeAgent
+    /// wraps list responses (`getList` below) — e.g. `GET /users/me` returns `{"user": {...}}`,
+    /// not a bare object. Omit it for the rare endpoint that returns an unwrapped body.
+    public func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], envelopeKey: String? = nil) async throws -> T {
         let data = try await authenticatedRequest(path: path, method: "GET", query: query, body: Data?.none)
-        return try decode(data)
+        guard let envelopeKey else { return try decode(data) }
+        return try decodeEnveloped(data, envelopeKey: envelopeKey)
     }
 
     /// Follows FreeAgent's `page`/`per_page` pagination until a page comes
@@ -67,10 +102,18 @@ public final class FreeAgentAPIClient {
         return all
     }
 
-    public func post<T: Decodable, Body: Encodable>(_ path: String, envelopeKey: String, query: [URLQueryItem] = [], body: Body) async throws -> T {
+    /// `responseEnvelopeKey` defaults to `envelopeKey` — the response is usually wrapped under
+    /// the same key as the request body (e.g. POST /contacts with `{"contact": {...}}` gets
+    /// `{"contact": {...full record...}}` back). It's a separate parameter because at least one
+    /// action endpoint breaks that symmetry: `POST /timeslips/:id/timer`'s request is
+    /// conventionally wrapped as `{"timer": {}}`, but the response is the updated timeslip,
+    /// wrapped as `{"timeslip": {...}}` — observed directly against the sandbox API.
+    public func post<T: Decodable, Body: Encodable>(
+        _ path: String, envelopeKey: String, responseEnvelopeKey: String? = nil, query: [URLQueryItem] = [], body: Body
+    ) async throws -> T {
         let bodyData = try jsonEncoder.encode([envelopeKey: body])
         let data = try await authenticatedRequest(path: path, method: "POST", query: query, body: bodyData)
-        return try decode(data)
+        return try decodeEnveloped(data, envelopeKey: responseEnvelopeKey ?? envelopeKey)
     }
 
     public func delete(_ path: String) async throws {
@@ -247,6 +290,15 @@ public final class FreeAgentAPIClient {
         } catch {
             throw FreeAgentError.decoding(error)
         }
+    }
+
+    /// Unwraps a single-resource envelope, e.g. `{"contact": {...}}` -> the contact.
+    private func decodeEnveloped<T: Decodable>(_ data: Data, envelopeKey: String) throws -> T {
+        let envelope: [String: T] = try decode(data, as: [String: T].self)
+        guard let value = envelope[envelopeKey] else {
+            throw FreeAgentError.decoding(MissingEnvelopeKey(envelopeKey: envelopeKey))
+        }
+        return value
     }
 
     private func decodeTokenResponse(_ data: Data) throws -> FreeAgentTokens {

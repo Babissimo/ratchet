@@ -31,7 +31,8 @@ final class FreeAgentDataStoreTests: XCTestCase {
     func test_refresh_assemblesClientProjectTaskTree() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
-            (match: "users/me", status: 200, body: Data(#"{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}"#.utf8)),
+            // Single-resource GETs are wrapped under their resource-name key, same as POST responses.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
             (match: "contacts", status: 200, body: Data(#"{"contacts":[{"url":"https://api.sandbox.freeagent.com/v2/contacts/1","organisation_name":"Acme","first_name":null,"last_name":null,"email":null,"phone_number":null,"address1":null,"town":null,"postcode":null,"country":null}]}"#.utf8)),
             (match: "projects", status: 200, body: Data(#"{"projects":[{"url":"https://api.sandbox.freeagent.com/v2/projects/1","contact":"https://api.sandbox.freeagent.com/v2/contacts/1","name":"Website Redesign","status":"Active","currency":"GBP","budget":"0","budget_units":"Hours","hours_per_day":"8","normal_billing_rate":"0","billing_period":"hour","uses_project_invoice_sequence":false,"contract_po_reference":null,"starts_on":null,"ends_on":null}]}"#.utf8)),
             (match: "tasks", status: 200, body: Data(#"{"tasks":[{"url":"https://api.sandbox.freeagent.com/v2/tasks/1","project":"https://api.sandbox.freeagent.com/v2/projects/1","name":"Development","is_billable":true,"status":"Active","billing_rate":null,"billing_period":null}]}"#.utf8)),
@@ -54,8 +55,10 @@ final class FreeAgentDataStoreTests: XCTestCase {
             // The "find today's timeslip for this task" search — distinguished
             // from the create-POST (plain "timeslips", no query) by "task=".
             (match: "task=", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":null}]}"#.utf8)),
-            // Starting the timer on the found timeslip.
-            (match: "/timeslips/55/timer", status: 200, body: Data(#"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-11T10:00:00Z"}}"#.utf8)),
+            // Starting the timer on the found timeslip. Observed against the sandbox API: this
+            // response is wrapped as "timeslip", not "timer" like the request body — the timer
+            // POST returns the updated timeslip, not a "timer" resource.
+            (match: "/timeslips/55/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-11T10:00:00Z"}}}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
 
@@ -81,10 +84,11 @@ final class FreeAgentDataStoreTests: XCTestCase {
         transport.responsesByPathSubstring = [
             // Search finds nothing for today.
             (match: "task=", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
-            // Starting the timer on the newly-created timeslip.
-            (match: "/timeslips/99/timer", status: 200, body: Data(#"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-11T10:00:00Z"}}"#.utf8)),
+            // Starting the timer on the newly-created timeslip — wrapped as "timeslip" (see the
+            // matching comment on the /timeslips/55/timer stub above).
+            (match: "/timeslips/99/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-11T10:00:00Z"}}}"#.utf8)),
             // Fallback: the plain create-POST to "timeslips" (no query).
-            (match: "timeslips", status: 200, body: Data(#"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":null}"#.utf8)),
+            (match: "timeslips", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":null}}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
 
@@ -109,7 +113,7 @@ final class FreeAgentDataStoreTests: XCTestCase {
     func test_stopTimer_deletesTimerOnRunningTimeslip() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
-            (match: "users/me", status: 200, body: Data(#"{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}"#.utf8)),
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
             (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
             (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
             (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),

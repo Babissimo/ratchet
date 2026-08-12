@@ -27,7 +27,7 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func refresh() async throws {
-        let user: FreeAgentUserDTO = try await apiClient.get("users/me")
+        let user: FreeAgentUserDTO = try await apiClient.get("users/me", envelopeKey: "user")
         accountEmail = user.email
         currentUserURL = user.url
 
@@ -108,7 +108,7 @@ public final class FreeAgentDataStore: DataStore {
 
         struct EmptyBody: Encodable {}
         let started: FreeAgentTimeslipDTO = try await apiClient.post(
-            "\(timeslipURL)/timer", envelopeKey: "timer", body: EmptyBody()
+            "\(timeslipURL)/timer", envelopeKey: "timer", responseEnvelopeKey: "timeslip", body: EmptyBody()
         )
         let resolved = resolvedTimeslip(started, clientId: clientId)
         currentRunningTimeslip = resolved
