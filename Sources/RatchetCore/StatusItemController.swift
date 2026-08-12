@@ -398,8 +398,9 @@ public final class StatusItemController {
         guard let billingRate = parseOptionalBillingRate(billingRateField) else { return }
 
         Task { @MainActor in
+            let task: RatchetTask
             do {
-                _ = try await self.dataStore.addTask(
+                task = try await self.dataStore.addTask(
                     name: name,
                     projectId: projectId,
                     clientId: clientId,
@@ -408,9 +409,29 @@ public final class StatusItemController {
                     billingRate: billingRate,
                     billingPeriod: billingRate == nil ? nil : billingPeriod
                 )
-                self.rebuild()
             } catch {
                 self.presentAPIError(error, action: "create the task")
+                return
+            }
+            self.rebuild()
+
+            // "New task…" is only reachable from the Start > drill-down, so creating one here
+            // means the user wants to start tracking it immediately — not just add it. The task
+            // itself is already created at this point, so a failure here gets its own message
+            // rather than implying the task creation failed too.
+            guard let client = self.dataStore.clients.first(where: { $0.id == clientId }),
+                  let project = client.projects.first(where: { $0.id == projectId })
+            else { return }
+            do {
+                let timeslip = try await self.dataStore.startTimer(taskId: task.id, projectId: projectId, clientId: clientId)
+                let ref = TrackedTaskRef(
+                    clientId: client.id, clientName: client.name,
+                    projectId: project.id, projectName: project.name,
+                    taskId: task.id, taskName: task.name
+                )
+                self.appState.startTracking(ref, startedAt: timeslip.date)
+            } catch {
+                self.presentAPIError(error, action: "start tracking the new task")
             }
         }
     }
