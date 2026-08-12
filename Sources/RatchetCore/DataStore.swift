@@ -11,6 +11,9 @@ public protocol DataStore: AnyObject {
     var accountEmail: String { get }
     var timeslips: [RatchetTimeslip] { get }
     var lastRefreshedAt: Date? { get }
+    /// The signed-in account's own FreeAgent web app URL, for "Open FreeAgent" — nil until
+    /// known (e.g. before the first successful `refresh()`).
+    var webAppURL: URL? { get }
 
     func addTask(
         name: String,

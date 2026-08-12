@@ -113,8 +113,9 @@ public final class StatusItemController {
             guard let self else { return }
             self.appState.setLaunchAtLogin(!self.appState.launchAtLoginEnabled)
         },
-        openFreeAgent: {
-            NSWorkspace.shared.open(URL(string: "https://app.freeagent.com")!)
+        openFreeAgent: { [weak self] in
+            let url = self?.dataStore.webAppURL ?? URL(string: "https://app.freeagent.com")!
+            NSWorkspace.shared.open(url)
         },
         addTask: { [weak self] clientId, projectId in
             self?.presentAddTaskPrompt(clientId: clientId, projectId: projectId)

@@ -7,6 +7,7 @@ public final class FakeDataStore: DataStore {
     public private(set) var refreshCount = 0
     public private(set) var timeslips: [RatchetTimeslip] = []
     public private(set) var lastRefreshedAt: Date?
+    public let webAppURL: URL? = URL(string: "https://app.freeagent.com")
 
     /// id of the timeslip with a currently-running timer, if any.
     private var runningTimeslipId: String?

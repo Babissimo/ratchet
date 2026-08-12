@@ -139,3 +139,7 @@ public struct FreeAgentUserDTO: Codable {
     public let url: String
     public let email: String
 }
+
+public struct FreeAgentCompanyDTO: Codable {
+    public let subdomain: String
+}

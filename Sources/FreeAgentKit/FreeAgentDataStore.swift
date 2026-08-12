@@ -8,6 +8,9 @@ public final class FreeAgentDataStore: DataStore {
     public private(set) var timeslips: [RatchetTimeslip] = []
     public private(set) var lastRefreshedAt: Date?
     public private(set) var currentRunningTimeslip: RatchetTimeslip?
+    /// The signed-in company's own web app URL (e.g. https://acebusiness.sandbox.freeagent.com),
+    /// for "Open FreeAgent" — nil until the first successful `refresh()`.
+    public private(set) var webAppURL: URL?
 
     /// How far back `refresh()` fetches timeslips for the "Recent time entries" menu. The menu
     /// only shows the last 20 entries anyway, so this just needs to comfortably cover
@@ -15,14 +18,16 @@ public final class FreeAgentDataStore: DataStore {
     private static let recentTimeslipWindowDays: Double = 14
 
     private let apiClient: FreeAgentAPIClient
+    private let environment: FreeAgentEnvironment
     private let clock: () -> Date
     /// project URL -> client URL, so timeslip DTOs (which only know their
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
     private var currentUserURL: String = ""
 
-    public init(apiClient: FreeAgentAPIClient, clock: @escaping () -> Date = Date.init) {
+    public init(apiClient: FreeAgentAPIClient, environment: FreeAgentEnvironment, clock: @escaping () -> Date = Date.init) {
         self.apiClient = apiClient
+        self.environment = environment
         self.clock = clock
     }
 
@@ -30,6 +35,12 @@ public final class FreeAgentDataStore: DataStore {
         let user: FreeAgentUserDTO = try await apiClient.get("users/me", envelopeKey: "user")
         accountEmail = user.email
         currentUserURL = user.url
+
+        // Best-effort: "Open FreeAgent" falls back to whatever URL it already had (or nil) if
+        // this fails, rather than failing the whole refresh over a menu convenience link.
+        if let company: FreeAgentCompanyDTO = try? await apiClient.get("company", envelopeKey: "company") {
+            webAppURL = environment.webAppURL(subdomain: company.subdomain)
+        }
 
         let contacts: [FreeAgentContactDTO] = try await apiClient.getList("contacts", listKey: "contacts")
         let projects: [FreeAgentProjectDTO] = try await apiClient.getList("projects", listKey: "projects")

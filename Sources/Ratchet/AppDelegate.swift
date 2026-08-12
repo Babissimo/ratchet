@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let apiClient = FreeAgentAPIClient(environment: environment, tokenStore: tokenStore)
         let authenticator = FreeAgentAuthenticator(environment: environment, apiClient: apiClient)
-        let dataStore = FreeAgentDataStore(apiClient: apiClient)
+        let dataStore = FreeAgentDataStore(apiClient: apiClient, environment: environment)
         let appState = AppState()
 
         let controller = StatusItemController(
