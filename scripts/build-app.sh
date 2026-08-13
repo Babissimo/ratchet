@@ -27,10 +27,12 @@ BIN_PATH=".build/$CONFIG/Ratchet"
 APP_DIR=".build/Ratchet.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_PATH" "$MACOS_DIR/Ratchet"
+cp "Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 
 cat > "$CONTENTS_DIR/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -51,6 +53,10 @@ cat > "$CONTENTS_DIR/Info.plist" << 'PLIST'
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>Ratchet</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>

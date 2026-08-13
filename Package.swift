@@ -8,6 +8,7 @@ let package = Package(
         .target(name: "RatchetCore"),
         .target(name: "FreeAgentKit", dependencies: ["RatchetCore"]),
         .executableTarget(name: "Ratchet", dependencies: ["RatchetCore", "FreeAgentKit"]),
+        .executableTarget(name: "IconExporter", dependencies: ["RatchetCore"]),
         .testTarget(name: "RatchetCoreTests", dependencies: ["RatchetCore"]),
         .testTarget(name: "FreeAgentKitTests", dependencies: ["FreeAgentKit"]),
     ]

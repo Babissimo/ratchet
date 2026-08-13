@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512" fill="none">
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#3E9A31"/>
+  <g transform="translate(32 32) scale(0.70) translate(-32 -32)">
+  <path d="M 9.00,32.00 A 23.00,23.00 0 1,1 55.00,32.00 A 23.00,23.00 0 1,1 9.00,32.00 Z M 16.00,32.00 A 16.00,16.00 0 1,1 48.00,32.00 A 16.00,16.00 0 1,1 16.00,32.00 Z" fill="#FFFFFF" fill-rule="evenodd"/>
+  <path d="M 36.00,10.57 L 51.47,7.88 L 54.30,10.47 L 47.68,16.86 Z M 52.56,24.75 L 62.63,36.80 L 61.80,40.54 L 52.96,38.01 Z M 48.56,46.18 L 43.15,60.92 L 39.50,62.08 L 37.27,53.15 Z M 28.00,53.43 L 12.53,56.12 L 9.70,53.53 L 16.32,47.14 Z M 11.44,39.25 L 1.37,27.20 L 2.20,23.46 L 11.04,25.99 Z M 15.44,17.82 L 20.85,3.08 L 24.50,1.92 L 26.73,10.85 Z" fill="#FFFFFF"/>
+  <line x1="32.00" y1="32.00" x2="38.04" y2="35.49" stroke="#FFFFFF" stroke-width="4.6" stroke-linecap="round"/>
+  <line x1="32.00" y1="32.00" x2="32.00" y2="20.54" stroke="#FFFFFF" stroke-width="4.6" stroke-linecap="round"/>
+  </g>
+</svg>

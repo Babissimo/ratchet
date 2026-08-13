@@ -20,6 +20,7 @@ public final class StatusItemController {
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
     private var isLoggingIn = false
+    private var appearanceObservation: NSKeyValueObservation?
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
     public var statusItemForTesting: NSStatusItem { statusItem }
@@ -41,10 +42,23 @@ public final class StatusItemController {
         self.restoreRunningTimer = restoreRunningTimer
         appState.onChange = { [weak self] in self?.rebuild() }
         rebuild()
+
+        // The tracking icon's hands are non-template (they carry real color, unlike the
+        // idle icon), so they don't get the automatic light/dark recoloring template images
+        // do — this observation is what keeps them legible when the user flips System
+        // Appearance, or the menu bar's own contrast, while a timer is running.
+        appearanceObservation = self.statusItem.button?.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            // AppKit delivers view-property KVO on the main thread; this mirrors the
+            // `MainActor.assumeIsolated` justification already used for the elapsed-time timer.
+            MainActor.assumeIsolated {
+                self?.updateIcon()
+            }
+        }
     }
 
     deinit {
         elapsedTimer?.invalidate()
+        appearanceObservation?.invalidate()
     }
 
     private lazy var actions: MenuActions = MenuActions(
@@ -198,23 +212,39 @@ public final class StatusItemController {
         updateTimer()
     }
 
+    /// The tray glyph's point size. NSStatusItem draws button images at roughly this size
+    /// regardless of the source image's declared size, but `RatchetIcon.mark` renders vector
+    /// paths scaled to whatever size is requested, so this is what determines crispness.
+    private static let trayIconSize: CGFloat = 18
+
+    /// Whether the menu bar is currently dark. The bezel's green fill has enough contrast
+    /// against both light and dark bars on its own; only the hands — which cross an open
+    /// cutout in the middle of the bezel, not the green fill — need to flip for contrast.
+    private var isDarkMenuBar: Bool {
+        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        return appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
     private func updateIcon() {
         let isTracking: Bool
         if case .tracking = appState.screen { isTracking = true } else { isTracking = false }
         if isTracking {
-            // Non-filled "clock" (face + hands as separate layers) rather than "clock.fill" —
-            // a solid green disc read as too much color; this keeps the face white/adaptive
-            // and tints only the hands green, so most of the glyph stays neutral.
-            let image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Ratchet")
-            let config = NSImage.SymbolConfiguration(paletteColors: [.white, .systemGreen])
-            let coloredImage = image?.withSymbolConfiguration(config)
+            let handColor: NSColor = isDarkMenuBar ? .white : .black
+            let image = RatchetIcon.mark(
+                size: Self.trayIconSize, bezelColor: RatchetIcon.trackingGreen, handColor: handColor
+            )
+            image.accessibilityDescription = "Ratchet"
             // Non-template so the green survives — NSStatusItem flattens template images to
-            // the menu bar's monochrome tint, which would erase the color.
-            coloredImage?.isTemplate = false
-            statusItem.button?.image = coloredImage
+            // the menu bar's monochrome tint, which would erase the color. That's also why the
+            // hand color above isn't automatic and needs `isDarkMenuBar` to pick it explicitly.
+            image.isTemplate = false
+            statusItem.button?.image = image
         } else {
-            let image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Ratchet")
-            image?.isTemplate = true
+            // Template: a single opaque color is fine (only alpha is used) since NSStatusItem
+            // recolors the whole image to match the menu bar's current light/dark tint.
+            let image = RatchetIcon.mark(size: Self.trayIconSize, bezelColor: .black, handColor: .black)
+            image.accessibilityDescription = "Ratchet"
+            image.isTemplate = true
             statusItem.button?.image = image
         }
     }
@@ -878,9 +908,10 @@ public final class StatusItemController {
         return formatter
     }()
 
-    /// Icon for the New Task/Client/Project dialogs, matching the menu bar glyph — replaces
-    /// NSAlert's default (a generic icon, since this app has no bundled app icon).
-    private static let formIcon: NSImage? = NSImage(systemSymbolName: "clock", accessibilityDescription: "Ratchet")
+    /// Icon for the New Task/Client/Project dialogs — the Dock/app-icon treatment rather than
+    /// the tray glyph, since dialogs sit on the desktop rather than the menu bar and read better
+    /// with the branded green tile. Replaces NSAlert's default generic icon.
+    private static let formIcon: NSImage? = RatchetIcon.appTile(size: 64)
 
     /// Shared row width for every form: a 90pt label + 8pt spacing + 180pt control, plus a
     /// little breathing room. Used as an explicit width rather than trusting AppKit to derive

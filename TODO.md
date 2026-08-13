@@ -20,10 +20,16 @@ that constraint; each item notes what it costs to skip signing.
   identity fixes that for local use. Does **not** make other users trust
   the app (self-signed certs aren't recognized off this Mac).
 
-- [ ] **App icon.** Currently no `.icns` — the app only has a menu-bar SF
-  Symbol (`clock`). Needs a real icon for Finder/Dock/About panel and for
-  a Homebrew Cask listing to look legitimate. `LSUIElement` apps still
-  ship an icon even without a Dock presence.
+- [x] **App icon.** `Resources/AppIcon.icns`, built from `RatchetIcon`
+  (`Sources/RatchetCore/RatchetIcon.swift`) via `swift run IconExporter` +
+  `iconutil`. `scripts/build-app.sh` copies it into the bundle and sets
+  `CFBundleIconFile`/`CFBundleIconName`. Also covers the Homebrew Cask
+  listing concern this item originally raised. Menu bar and dialogs use
+  the same drawing code (`RatchetIcon.mark` / `.appTile`) instead of the
+  old SF Symbol `clock` — `.appTile` (Dock/dialog/FreeAgent-listing icon,
+  `design/icons/freeagent-icon.png`) has a textured gradient/grain/engraved
+  treatment; `.mark` (tray glyph) stays flat, per platform convention for
+  status-bar icons.
 
 - [ ] **Switch OAuth to PKCE, stop embedding the client secret.**
   `Sources/FreeAgentKit/Secrets.swift` bakes a real client secret into the
