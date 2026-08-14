@@ -21,7 +21,22 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "Building Ratchet ($CONFIG)..."
-swift build -c "$CONFIG"
+# --product keeps IconExporter (a dev-only AppKit renderer that is never bundled) out of the
+# app build; it gets built explicitly below instead.
+swift build -c "$CONFIG" --product Ratchet
+
+# The icon is drawn by RatchetIcon in Swift, so regenerate it from current source on every build
+# rather than trusting the committed .icns — otherwise a colour or texture tweak changes the
+# dialog icon the app draws live while the Dock/Finder icon silently stays on the old art.
+# Everything lands under .build so a build never dirties tracked files.
+echo "Regenerating app icon..."
+ICON_DIR=".build/icons"
+ICNS_PATH="$ICON_DIR/AppIcon.icns"
+rm -rf "$ICON_DIR/AppIcon.iconset"
+# Same config as the app build above, so this only has to compile IconExporter itself rather
+# than a second copy of RatchetCore.
+swift run -c "$CONFIG" IconExporter "$ICON_DIR" > /dev/null
+iconutil -c icns "$ICON_DIR/AppIcon.iconset" -o "$ICNS_PATH"
 
 BIN_PATH=".build/$CONFIG/Ratchet"
 APP_DIR=".build/Ratchet.app"
@@ -32,7 +47,24 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_PATH" "$MACOS_DIR/Ratchet"
-cp "Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+cp "$ICNS_PATH" "$RESOURCES_DIR/AppIcon.icns"
+
+# Resources/AppIcon.icns is committed for anyone packaging without this script, so flag it when
+# it no longer matches what the code draws. Advisory only: the bundle above already has the
+# fresh icon, and rewriting a tracked file mid-build would be a nasty surprise.
+if ! cmp -s "$ICNS_PATH" "Resources/AppIcon.icns"; then
+    echo "WARNING: Resources/AppIcon.icns is stale. Refresh it with:" >&2
+    echo "    cp $ICNS_PATH Resources/AppIcon.icns" >&2
+fi
+
+# The same IconExporter run above also wrote the FreeAgent listing icon into $ICON_DIR (no
+# second invocation needed). It's committed under design/icons for the FreeAgent connected-app
+# listing, which this build doesn't touch — so, same as AppIcon.icns, just warn if it's stale.
+FREEAGENT_ICON_PATH="$ICON_DIR/freeagent-icon.png"
+if ! cmp -s "$FREEAGENT_ICON_PATH" "design/icons/freeagent-icon.png"; then
+    echo "WARNING: design/icons/freeagent-icon.png is stale. Refresh it with:" >&2
+    echo "    cp $FREEAGENT_ICON_PATH design/icons/freeagent-icon.png" >&2
+fi
 
 cat > "$CONTENTS_DIR/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

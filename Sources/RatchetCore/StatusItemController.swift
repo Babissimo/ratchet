@@ -375,16 +375,32 @@ public final class StatusItemController {
         return LogTimeFields(rows: rows, datePicker: datePicker, durationField: durationField, commentField: commentField)
     }
 
+    /// Whether the billing rate field currently holds something acceptable — blank (inherit the
+    /// project's rate) or a non-negative number.
+    ///
+    /// Separate from `parseOptionalBillingRate` because that one reports failure by throwing up
+    /// an alert, which is exactly wrong for the per-keystroke check that gates the confirm
+    /// button. `parseOptionalBillingRate` calls this rather than re-deriving the rule, so the
+    /// two can't diverge.
+    private static func isValidOptionalBillingRate(_ field: NSTextField) -> Bool {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return true }
+        guard let parsed = Double(text) else { return false }
+        return parsed >= 0
+    }
+
     /// Parses the billing rate field: blank means "inherit the project's rate" (nil),
     /// otherwise it must be a non-negative number. Returns nil (with an error shown) if invalid.
+    ///
+    /// Unreachable in practice now that the confirm button is disabled while the field is
+    /// invalid — kept as the real parse, and as a backstop.
     private func parseOptionalBillingRate(_ field: NSTextField) -> Double?? {
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return .some(nil) }
-        guard let parsed = Double(text), parsed >= 0 else {
+        guard Self.isValidOptionalBillingRate(field) else {
             presentValidationError("Billing rate must be zero or more, or left blank to use the project's rate.")
             return nil
         }
-        return .some(parsed)
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? .some(nil) : .some(Double(text))
     }
 
     private func runAddTaskPrompt(clientId: String, projectId: String) {
@@ -410,8 +426,12 @@ public final class StatusItemController {
 
         alert.accessoryView = Self.frameBasedContainer(wrapping: stack)
         alert.window.initialFirstResponder = nameField
-        let observers = liveValidate(button: addButton, fields: [nameField]) {
-            TaskNameValidator.validate(nameField.stringValue) != nil
+        // Billing rate is watched too, not just the name: leaving it out let "Add" stay enabled
+        // over an unparseable rate, so the sheet dismissed and *then* complained — taking the
+        // name, status and billing period down with it.
+        let observers = liveValidate(button: addButton, fields: [nameField, billingRateField]) {
+            guard TaskNameValidator.validate(nameField.stringValue) != nil else { return false }
+            return Self.isValidOptionalBillingRate(billingRateField)
         }
         // The app runs as .accessory and is not the active app when a status-bar item is
         // clicked, so the alert can appear non-key/non-frontmost without this.
@@ -563,8 +583,12 @@ public final class StatusItemController {
 
         alert.accessoryView = Self.frameBasedContainer(wrapping: stack)
         alert.window.initialFirstResponder = nameField
-        let observers = liveValidate(button: createButton, fields: [nameField, durationField]) {
+        // Billing rate is watched here for the same reason as in `runAddTaskPrompt`, and it costs
+        // more in this sheet: dismissing on an unparseable rate would discard the name, status,
+        // billing period, date, duration *and* comment, all of which live only in these controls.
+        let observers = liveValidate(button: createButton, fields: [nameField, billingRateField, durationField]) {
             guard TaskNameValidator.validate(nameField.stringValue) != nil else { return false }
+            guard Self.isValidOptionalBillingRate(billingRateField) else { return false }
             guard DurationFormatter.parseHoursAndMinutes(durationField.stringValue) != nil else { return false }
             return true
         }
@@ -686,12 +710,20 @@ public final class StatusItemController {
 
         alert.accessoryView = Self.frameBasedContainer(wrapping: stack)
         alert.window.initialFirstResponder = orgField
-        let observers = liveValidate(button: createButton, fields: [orgField, firstNameField, lastNameField]) { [self] in
-            resolvedClientName(
+        // Email is watched as well as the name fields: it's the only other thing checked below,
+        // and leaving it out meant a typo'd address dismissed the sheet and *then* complained,
+        // throwing away all nine fields the user had just filled in. The email itself stays
+        // optional, so the test is "blank or plausible" — matching the post-dismiss guard, which
+        // only reaches `isPlausibleEmail` once `TaskNameValidator.validate` has ruled out blank.
+        // Disagreement between the two would strand the user on a permanently disabled button.
+        let observers = liveValidate(button: createButton, fields: [orgField, firstNameField, lastNameField, emailField]) { [self] in
+            guard resolvedClientName(
                 organisationName: orgField.stringValue,
                 firstName: firstNameField.stringValue,
                 lastName: lastNameField.stringValue
-            ) != nil
+            ) != nil else { return false }
+            guard let email = TaskNameValidator.validate(emailField.stringValue) else { return true }
+            return Self.isPlausibleEmail(email)
         }
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -703,7 +735,10 @@ public final class StatusItemController {
             firstName: firstNameField.stringValue,
             lastName: lastNameField.stringValue
         )
-        guard let name else {
+        // `resolvedClientName` still enforces the "organisation name, OR both first and last"
+        // rule, but its flattened result is no longer what gets sent — the store takes the
+        // fields apart so FreeAgent can tell an organisation from a person.
+        guard name != nil else {
             presentValidationError("Enter either an organisation name, or both a first and last name.")
             return
         }
@@ -715,7 +750,9 @@ public final class StatusItemController {
         Task { @MainActor in
             do {
                 _ = try await self.dataStore.addClient(
-                    name: name,
+                    organisationName: TaskNameValidator.validate(orgField.stringValue),
+                    firstName: TaskNameValidator.validate(firstNameField.stringValue),
+                    lastName: TaskNameValidator.validate(lastNameField.stringValue),
                     email: email,
                     phoneNumber: TaskNameValidator.validate(phoneField.stringValue),
                     address1: TaskNameValidator.validate(address1Field.stringValue),
@@ -896,17 +933,9 @@ public final class StatusItemController {
     private static func parseOptionalDate(_ text: String) -> Date?? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .some(nil) }
-        guard let date = projectDateFormatter.date(from: trimmed) else { return nil }
+        guard let date = CalendarDay.day(from: trimmed) else { return nil }
         return .some(date)
     }
-
-    private static let projectDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter
-    }()
 
     /// Icon for the New Task/Client/Project dialogs — the Dock/app-icon treatment rather than
     /// the tray glyph, since dialogs sit on the desktop rather than the menu bar and read better

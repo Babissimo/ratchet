@@ -52,7 +52,10 @@ public enum BillingPeriod: String, CaseIterable, Codable {
 public struct RatchetProject: Identifiable, Equatable, Codable {
     public let id: String
     public let name: String
-    public let tasks: [RatchetTask]
+    /// `var` purely so `withTasks(_:)` can copy-and-replace without re-listing every other
+    /// field. Stores expose their `clients` as `private(set)`, so this isn't a mutation route
+    /// for callers.
+    public var tasks: [RatchetTask]
     public let status: ProjectStatus
     public let currency: String
     public let budget: Double
@@ -96,12 +99,24 @@ public struct RatchetProject: Identifiable, Equatable, Codable {
         self.startsOn = startsOn
         self.endsOn = endsOn
     }
+
+    /// A copy with a different task list.
+    ///
+    /// Deliberately `var copy = self` rather than a call to `init` listing all fourteen fields:
+    /// the hand-rolled version compiles fine when a new property is added (the initializer
+    /// defaults it), so appending a task would silently reset whatever the new field held.
+    public func withTasks(_ tasks: [RatchetTask]) -> RatchetProject {
+        var copy = self
+        copy.tasks = tasks
+        return copy
+    }
 }
 
 public struct RatchetClient: Identifiable, Equatable, Codable {
     public let id: String
     public let name: String
-    public let projects: [RatchetProject]
+    /// `var` for the same reason as `RatchetProject.tasks` — see `withProjects(_:)`.
+    public var projects: [RatchetProject]
     public let email: String?
     public let phoneNumber: String?
     public let address1: String?
@@ -129,6 +144,21 @@ public struct RatchetClient: Identifiable, Equatable, Codable {
         self.town = town
         self.postcode = postcode
         self.country = country
+    }
+
+    /// A copy with a different project list. See `RatchetProject.withTasks(_:)` for why this
+    /// copies rather than re-invoking `init`.
+    public func withProjects(_ projects: [RatchetProject]) -> RatchetClient {
+        var copy = self
+        copy.projects = projects
+        return copy
+    }
+
+    /// A copy with one project replaced in place, addressed by index.
+    public func replacingProject(at index: Int, with project: RatchetProject) -> RatchetClient {
+        var projects = self.projects
+        projects[index] = project
+        return withProjects(projects)
     }
 }
 

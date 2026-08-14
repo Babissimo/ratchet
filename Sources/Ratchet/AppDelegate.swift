@@ -3,6 +3,9 @@ import AppKit
 import RatchetCore
 import FreeAgentKit
 
+/// `@MainActor` because AppKit only ever calls a delegate on the main thread, and its stored
+/// properties (`URLSchemeHandler`, `StatusItemController`) are main-actor-isolated themselves.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private let urlSchemeHandler = URLSchemeHandler()
@@ -27,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSWorkspace.shared.open(authorizeURL)
                 let callbackURL = try await urlSchemeHandler.waitForCallback(timeout: 180)
                 let tokens = try await authenticator.handleCallback(url: callbackURL, expectedState: expectedState)
-                tokenStore.save(tokens)
+                guard tokenStore.save(tokens) else { throw FreeAgentError.credentialStorageFailed }
             },
             restoreRunningTimer: { restoreRunningTimer(from: dataStore, into: appState) }
         )

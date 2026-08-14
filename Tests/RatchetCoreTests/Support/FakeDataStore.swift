@@ -1,26 +1,27 @@
 import Foundation
+@testable import RatchetCore
 
 @MainActor
-public final class FakeDataStore: DataStore {
-    public private(set) var clients: [RatchetClient]
-    public let accountEmail: String
-    public private(set) var refreshCount = 0
-    public private(set) var timeslips: [RatchetTimeslip] = []
-    public private(set) var lastRefreshedAt: Date?
-    public let webAppURL: URL? = URL(string: "https://app.freeagent.com")
+final class FakeDataStore: DataStore {
+    private(set) var clients: [RatchetClient]
+    let accountEmail: String
+    private(set) var refreshCount = 0
+    private(set) var timeslips: [RatchetTimeslip] = []
+    private(set) var lastRefreshedAt: Date?
+    let webAppURL: URL? = URL(string: "https://app.freeagent.com")
 
     /// id of the timeslip with a currently-running timer, if any.
     private var runningTimeslipId: String?
 
     private let clock: () -> Date
 
-    public init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
+    init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
         self.clients = clients
         self.accountEmail = accountEmail
         self.clock = clock
     }
 
-    public static func seeded() -> FakeDataStore {
+    static func seeded() -> FakeDataStore {
         let developmentTask = RatchetTask(id: "task-1", name: "Development")
         let designTask = RatchetTask(id: "task-2", name: "Design")
         let websiteProject = RatchetProject(id: "proj-1", name: "Website Redesign", tasks: [developmentTask, designTask])
@@ -31,7 +32,7 @@ public final class FakeDataStore: DataStore {
         return FakeDataStore(clients: [acme, otherCo], accountEmail: "al@example.com")
     }
 
-    public func addTask(
+    func addTask(
         name: String,
         projectId: String,
         clientId: String,
@@ -51,40 +52,16 @@ public final class FakeDataStore: DataStore {
             billingRate: billingRate,
             billingPeriod: billingPeriod
         )
-        var projects = clients[clientIndex].projects
-        let existingProject = projects[projectIndex]
-        projects[projectIndex] = RatchetProject(
-            id: existingProject.id,
-            name: existingProject.name,
-            tasks: existingProject.tasks + [newTask],
-            status: existingProject.status,
-            currency: existingProject.currency,
-            budget: existingProject.budget,
-            budgetUnits: existingProject.budgetUnits,
-            hoursPerDay: existingProject.hoursPerDay,
-            normalBillingRate: existingProject.normalBillingRate,
-            billingPeriod: existingProject.billingPeriod,
-            usesProjectInvoiceSequence: existingProject.usesProjectInvoiceSequence,
-            contractPoReference: existingProject.contractPoReference,
-            startsOn: existingProject.startsOn,
-            endsOn: existingProject.endsOn
-        )
-        clients[clientIndex] = RatchetClient(
-            id: clients[clientIndex].id,
-            name: clients[clientIndex].name,
-            projects: projects,
-            email: clients[clientIndex].email,
-            phoneNumber: clients[clientIndex].phoneNumber,
-            address1: clients[clientIndex].address1,
-            town: clients[clientIndex].town,
-            postcode: clients[clientIndex].postcode,
-            country: clients[clientIndex].country
-        )
+        let existingProject = clients[clientIndex].projects[projectIndex]
+        let updatedProject = existingProject.withTasks(existingProject.tasks + [newTask])
+        clients[clientIndex] = clients[clientIndex].replacingProject(at: projectIndex, with: updatedProject)
         return newTask
     }
 
-    public func addClient(
-        name: String,
+    func addClient(
+        organisationName: String? = nil,
+        firstName: String? = nil,
+        lastName: String? = nil,
         email: String? = nil,
         phoneNumber: String? = nil,
         address1: String? = nil,
@@ -92,9 +69,14 @@ public final class FakeDataStore: DataStore {
         postcode: String? = nil,
         country: String? = nil
     ) async throws -> RatchetClient {
+        // Mirrors FreeAgentContactDTO.displayName, for the same reason the fake mirrors the
+        // real store's timer-reuse semantics: a fake that names clients differently from the
+        // real one lets a display-name regression pass its tests.
+        let displayName = organisationName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? [firstName, lastName].compactMap { $0 }.joined(separator: " ")
         let newClient = RatchetClient(
             id: "client-\(UUID().uuidString.prefix(8))",
-            name: name,
+            name: displayName,
             projects: [],
             email: email,
             phoneNumber: phoneNumber,
@@ -107,7 +89,7 @@ public final class FakeDataStore: DataStore {
         return newClient
     }
 
-    public func addProject(
+    func addProject(
         name: String,
         clientId: String,
         status: ProjectStatus,
@@ -140,23 +122,11 @@ public final class FakeDataStore: DataStore {
             startsOn: startsOn,
             endsOn: endsOn
         )
-        var projects = clients[clientIndex].projects
-        projects.append(newProject)
-        clients[clientIndex] = RatchetClient(
-            id: clients[clientIndex].id,
-            name: clients[clientIndex].name,
-            projects: projects,
-            email: clients[clientIndex].email,
-            phoneNumber: clients[clientIndex].phoneNumber,
-            address1: clients[clientIndex].address1,
-            town: clients[clientIndex].town,
-            postcode: clients[clientIndex].postcode,
-            country: clients[clientIndex].country
-        )
+        clients[clientIndex] = clients[clientIndex].withProjects(clients[clientIndex].projects + [newProject])
         return newProject
     }
 
-    public func logTime(
+    func logTime(
         taskId: String,
         projectId: String,
         clientId: String,
@@ -182,16 +152,34 @@ public final class FakeDataStore: DataStore {
         return entry
     }
 
-    public func refresh() async throws {
+    func refresh() async throws {
         refreshCount += 1
         lastRefreshedAt = clock()
     }
 
-    public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+    func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
         guard let client = clients.first(where: { $0.id == clientId }),
               let project = client.projects.first(where: { $0.id == projectId }),
               project.tasks.contains(where: { $0.id == taskId })
         else { throw DataStoreError.notFound }
+
+        // Deliberately mirrors FreeAgentDataStore.startTimer: resume today's existing timeslip for
+        // this task instead of opening a second one, creating a slip only when none exists. A fake
+        // that always appended made the resume path untestable — every "start, stop, start again"
+        // test passed against two fresh zero-hour slips, so a regression that duplicated the day's
+        // timeslip (and split the accrued hours across two entries) would sail through the suite.
+        //
+        // Matched on the *calendar day*, not `Date` equality, because the real store's filter is a
+        // `dated_on` day string: two starts hours apart on the same local day must collide, which
+        // raw `Date ==` would never do. `clock()` is the single source of "now" here so a test that
+        // injects a clock can straddle midnight and see the same boundary the real store sees.
+        let today = CalendarDay.dayString(from: clock())
+        if let index = timeslips.firstIndex(where: {
+            $0.taskId == taskId && $0.projectId == projectId && CalendarDay.dayString(from: $0.date) == today
+        }) {
+            runningTimeslipId = timeslips[index].id
+            return timeslips[index]
+        }
 
         // Starting a new timer implicitly stops whichever one was running: `runningTimeslipId`
         // is simply reassigned below, and the old entry keeps whatever hours it had accrued.
@@ -209,7 +197,7 @@ public final class FakeDataStore: DataStore {
         return entry
     }
 
-    public func stopTimer() async throws -> RatchetTimeslip? {
+    func stopTimer() async throws -> RatchetTimeslip? {
         guard let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) else {
             return nil
         }

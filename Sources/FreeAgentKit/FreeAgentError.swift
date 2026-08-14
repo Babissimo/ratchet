@@ -9,6 +9,8 @@ public enum FreeAgentError: Error, CustomStringConvertible {
     case authCancelled
     case authTimedOut
     case stateMismatch
+    case credentialStorageFailed
+    case invalidURL(String)
 
     public var description: String {
         switch self {
@@ -26,6 +28,10 @@ public enum FreeAgentError: Error, CustomStringConvertible {
             return "login timed out — please try again"
         case .stateMismatch:
             return "login response didn't match the request (possible tampering) — please try again"
+        case .credentialStorageFailed:
+            return "couldn't save your FreeAgent login to the Keychain — you may be asked to log in again next time Ratchet starts"
+        case .invalidURL(let path):
+            return "FreeAgent returned an address Ratchet couldn't use (\"\(path)\")"
         }
     }
 }

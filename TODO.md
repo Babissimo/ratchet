@@ -21,9 +21,11 @@ that constraint; each item notes what it costs to skip signing.
   the app (self-signed certs aren't recognized off this Mac).
 
 - [x] **App icon.** `Resources/AppIcon.icns`, built from `RatchetIcon`
-  (`Sources/RatchetCore/RatchetIcon.swift`) via `swift run IconExporter` +
-  `iconutil`. `scripts/build-app.sh` copies it into the bundle and sets
-  `CFBundleIconFile`/`CFBundleIconName`. Also covers the Homebrew Cask
+  (`Sources/RatchetCore/RatchetIcon.swift`) via
+  `swift run IconExporter <output-dir>` + `iconutil`.
+  `scripts/build-app.sh` regenerates it into `.build/icons` on every run,
+  bundles that, sets `CFBundleIconFile`/`CFBundleIconName`, and warns when the
+  committed copy has gone stale. Also covers the Homebrew Cask
   listing concern this item originally raised. Menu bar and dialogs use
   the same drawing code (`RatchetIcon.mark` / `.appTile`) instead of the
   old SF Symbol `clock` — `.appTile` (Dock/dialog/FreeAgent-listing icon,

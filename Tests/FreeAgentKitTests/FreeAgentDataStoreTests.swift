@@ -165,14 +165,23 @@ final class FreeAgentDataStoreTests: XCTestCase {
         tokenStore.clear()
     }
 
-    func test_stopTimer_returnsNilWhenNothingIsRunning() async throws {
+    func test_stopTimer_queriesServerAndReturnsNilWhenCacheIsEmptyAndNothingIsRunning() async throws {
+        // No `refresh()` here, so `currentRunningTimeslip` starts nil — the case the
+        // server-fallback in `stopTimer()` exists for (see its doc comment): an empty cache
+        // isn't proof nothing is running, so it must check before giving up.
         let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+        ]
         let (store, tokenStore) = makeStore(transport: transport)
 
         let stopped = try await store.stopTimer()
 
         XCTAssertNil(stopped)
-        XCTAssertTrue(transport.calls.isEmpty)
+        // Exactly one call — the fallback running-timeslip query — confirming the fallback
+        // fired rather than the old no-op path that never touched the network.
+        XCTAssertEqual(transport.calls.count, 1)
+        XCTAssertTrue(transport.calls[0].url!.absoluteString.contains("view=running"))
         tokenStore.clear()
     }
 }

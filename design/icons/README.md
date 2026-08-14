@@ -7,19 +7,33 @@ in Swift at `Sources/RatchetCore/RatchetIcon.swift` and used by
 combinations as SVG); it is not read at runtime and the two are kept in sync
 by hand — see the doc comment atop `RatchetIcon.swift`.
 
-Also produced from the same Swift code, via `swift run IconExporter`:
+Also produced from the same Swift code, by `IconExporter`, which takes the
+output directory as an argument and writes only there (default `.build/icons`)
+— it never writes into this tracked directory, so a build can't dirty the tree:
 
-- `Resources/AppIcon.icns` (repo root) — built by piping the exporter's
-  `.iconset` output through `iconutil`; wired into `scripts/build-app.sh`.
+- `Resources/AppIcon.icns` (repo root) — `scripts/build-app.sh` regenerates the
+  `.iconset` on every run, pipes it through `iconutil`, and bundles *that*, so
+  the shipped icon always matches the current source. The committed copy exists
+  for anyone packaging without the script; the build warns when the two differ
+  and prints the `cp` to refresh it.
 - `freeagent-icon.png` in this directory — the green-tile treatment at 512px,
   for use in FreeAgent's own UI (a connected-app listing, etc.). Chosen over a
   transparent mark-only asset because it's self-contained and safe on any
-  background; ask if a transparent version is needed instead.
+  background; ask if a transparent version is needed instead. The exporter
+  writes its copy to `<output-dir>/freeagent-icon.png`; copy it over by hand
+  when the art changes.
 
-Regenerate with:
+Regenerate the SVG exploration set with:
 
 ```bash
 python3 design/icons/generate.py
+```
+
+Regenerate the shipped app icon (also done automatically by
+`scripts/build-app.sh`) with:
+
+```bash
+swift run IconExporter .build/icons && iconutil -c icns .build/icons/AppIcon.iconset -o Resources/AppIcon.icns
 ```
 
 `preview.html` shows every variant at 16/18/22/32/64, idle and tracking, with

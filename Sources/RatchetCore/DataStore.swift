@@ -25,8 +25,15 @@ public protocol DataStore: AnyObject {
         billingPeriod: BillingPeriod?
     ) async throws -> RatchetTask
 
+    /// Names are passed through structurally rather than pre-flattened into one display string:
+    /// FreeAgent stores an organisation and a person differently, and collapsing "Jane" + "Doe"
+    /// into an `organisation_name` made every individual client show up as a company on invoices
+    /// with its name fields empty. Validation ("an organisation name, OR both first and last")
+    /// still happens at the form; the store just needs the pieces.
     func addClient(
-        name: String,
+        organisationName: String?,
+        firstName: String?,
+        lastName: String?,
         email: String?,
         phoneNumber: String?,
         address1: String?,

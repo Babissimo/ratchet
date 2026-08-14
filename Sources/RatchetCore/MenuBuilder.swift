@@ -81,58 +81,48 @@ public enum MenuBuilder {
         return menu
     }
 
+    /// "Start timer" is the task picker whose leaves start the clock.
+    ///
+    /// A named entry point rather than an inline `taskPicker(…)` call at each use site because
+    /// the two pickers are the app's two primary verbs, and tests pin them by name.
     static func buildStartSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        if dataStore.clients.isEmpty {
-            menu.addItem(disabledItem("No clients"))
-        }
-        for client in dataStore.clients {
-            let item = NSMenuItem(title: client.name, action: nil, keyEquivalent: "")
-            item.submenu = buildProjectsSubmenu(client: client, actions: actions)
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Add client…", handler: actions.addClient))
-        return menu
+        taskPicker(dataStore: dataStore, actions: actions, leaves: TaskPickerLeaves(
+            chooseTask: { client, project, task in
+                actions.startTracking(TrackedTaskRef(
+                    clientId: client.id, clientName: client.name,
+                    projectId: project.id, projectName: project.name,
+                    taskId: task.id, taskName: task.name
+                ))
+            },
+            chooseNewTask: { client, project in actions.addTask(client.id, project.id) }
+        ))
     }
 
-    private static func buildProjectsSubmenu(client: RatchetClient, actions: MenuActions) -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        if client.projects.isEmpty {
-            menu.addItem(disabledItem("No projects"))
-        }
-        for project in client.projects {
-            let item = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
-            item.submenu = buildTasksSubmenu(client: client, project: project, actions: actions)
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Add project…", handler: { actions.addProject(client.id) }))
-        return menu
-    }
-
-    private static func buildTasksSubmenu(client: RatchetClient, project: RatchetProject, actions: MenuActions) -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        if project.tasks.isEmpty {
-            menu.addItem(disabledItem("No tasks"))
-        }
-        for task in project.tasks {
-            let ref = TrackedTaskRef(
-                clientId: client.id, clientName: client.name,
-                projectId: project.id, projectName: project.name,
-                taskId: task.id, taskName: task.name
-            )
-            menu.addItem(ClosureMenuItem(title: task.name, handler: { actions.startTracking(ref) }))
-        }
-        menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "New task…", handler: { actions.addTask(client.id, project.id) }))
-        return menu
-    }
-
+    /// "Log past time" is the same picker whose leaves open the retrospective-entry sheet.
     static func buildLogPastTimeSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
+        taskPicker(dataStore: dataStore, actions: actions, leaves: TaskPickerLeaves(
+            chooseTask: { client, project, task in actions.logPastTime(client.id, project.id, task.id) },
+            chooseNewTask: { client, project in actions.logPastTimeForNewTask(client.id, project.id) }
+        ))
+    }
+
+    /// Everything that distinguishes the two task pickers.
+    ///
+    /// The pickers used to be two hand-copied three-level trees, identical down to their
+    /// separators and empty-state rows, and every change to the shared scaffolding — a renamed
+    /// placeholder, a reordered row — had to be applied twice or the two menus silently drifted.
+    /// Naming the difference as a value makes it structurally impossible for the shapes to
+    /// diverge: a new picker supplies two closures and inherits the rest.
+    private struct TaskPickerLeaves {
+        let chooseTask: (RatchetClient, RatchetProject, RatchetTask) -> Void
+        let chooseNewTask: (RatchetClient, RatchetProject) -> Void
+    }
+
+    /// Client → project → task, with an "add one" escape hatch at each level so a user who
+    /// discovers mid-flow that the thing they want doesn't exist yet never has to back out to
+    /// FreeAgent. The escape hatches above the leaves are the same for every picker — only the
+    /// bottom two rows are parameterised.
+    private static func taskPicker(dataStore: DataStore, actions: MenuActions, leaves: TaskPickerLeaves) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if dataStore.clients.isEmpty {
@@ -140,7 +130,7 @@ public enum MenuBuilder {
         }
         for client in dataStore.clients {
             let item = NSMenuItem(title: client.name, action: nil, keyEquivalent: "")
-            item.submenu = buildLogPastTimeProjectsSubmenu(client: client, actions: actions)
+            item.submenu = taskPickerProjects(client: client, actions: actions, leaves: leaves)
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -148,7 +138,7 @@ public enum MenuBuilder {
         return menu
     }
 
-    private static func buildLogPastTimeProjectsSubmenu(client: RatchetClient, actions: MenuActions) -> NSMenu {
+    private static func taskPickerProjects(client: RatchetClient, actions: MenuActions, leaves: TaskPickerLeaves) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if client.projects.isEmpty {
@@ -156,7 +146,7 @@ public enum MenuBuilder {
         }
         for project in client.projects {
             let item = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
-            item.submenu = buildLogPastTimeTasksSubmenu(client: client, project: project, actions: actions)
+            item.submenu = taskPickerTasks(client: client, project: project, leaves: leaves)
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -164,24 +154,28 @@ public enum MenuBuilder {
         return menu
     }
 
-    private static func buildLogPastTimeTasksSubmenu(client: RatchetClient, project: RatchetProject, actions: MenuActions) -> NSMenu {
+    private static func taskPickerTasks(client: RatchetClient, project: RatchetProject, leaves: TaskPickerLeaves) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if project.tasks.isEmpty {
             menu.addItem(disabledItem("No tasks"))
         }
         for task in project.tasks {
-            menu.addItem(ClosureMenuItem(title: task.name, handler: { actions.logPastTime(client.id, project.id, task.id) }))
+            menu.addItem(ClosureMenuItem(title: task.name, handler: { leaves.chooseTask(client, project, task) }))
         }
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "New task…", handler: { actions.logPastTimeForNewTask(client.id, project.id) }))
+        menu.addItem(ClosureMenuItem(title: "New task…", handler: { leaves.chooseNewTask(client, project) }))
         return menu
     }
 
     static func buildRecentTimeEntriesSubmenu(dataStore: DataStore) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let recent = dataStore.timeslips.reversed().prefix(20)
+        // Sorted here rather than trusting the store's array order. That order comes from
+        // whatever sequence FreeAgent's pagination happened to return, and `logTime` appends
+        // locally — so a back-dated entry logged just now would otherwise sort as the newest
+        // thing in the list until the next refresh reshuffled it.
+        let recent = dataStore.timeslips.sorted { $0.date > $1.date }.prefix(20)
         if recent.isEmpty {
             menu.addItem(disabledItem("No time logged yet"))
             return menu
@@ -189,7 +183,7 @@ public enum MenuBuilder {
         for entry in recent {
             let path = path(for: entry, in: dataStore)
             let duration = ElapsedTimeFormatter.format(seconds: entry.hours * 3600)
-            let dateText = recentEntryDateFormatter.string(from: entry.date)
+            let dateText = CalendarDay.displayString(from: entry.date)
             menu.addItem(disabledItem("\(path) · \(duration) · \(dateText)"))
         }
         return menu
@@ -201,13 +195,6 @@ public enum MenuBuilder {
         guard let task = project.tasks.first(where: { $0.id == entry.taskId }) else { return "\(client.name) · \(project.name) · Unknown task" }
         return "\(client.name) · \(project.name) · \(task.name)"
     }
-
-    private static let recentEntryDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter
-    }()
 
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
@@ -260,8 +247,15 @@ public enum MenuBuilder {
         return "Last refreshed at \(lastRefreshedAtFormatter.string(from: lastRefreshedAt))"
     }
 
+    /// A wall-clock timestamp, not a calendar day, so this stays a local `DateFormatter` rather
+    /// than going through `CalendarDay`. The locale and calendar are pinned because a fixed
+    /// `dateFormat` is still rendered through the user's own: a preference for Arabic-Indic or
+    /// Devanagari digits would otherwise print non-ASCII numerals, and a non-Gregorian regional
+    /// calendar would print the wrong year entirely.
     private static let lastRefreshedAtFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "HH:mm 'on' yyyy-MM-dd"
         return formatter
     }()

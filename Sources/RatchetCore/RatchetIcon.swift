@@ -232,8 +232,18 @@ public enum RatchetIcon {
         drawGrain(in: tileRect, context: context)
         context.restoreGState()
 
+        // `.evenOdd`, not `.winding`: the inverse-shape trick below combines this clip with a
+        // separate `bigRect` path into one compound path, and `.evenOdd`'s parity check is the
+        // only rule that reliably treats that as "bigRect minus clip" regardless of which
+        // direction either contour happens to be traced in. `.winding` depends on the two
+        // contours' directions actually opposing each other — nothing here controls that, and
+        // for this rect-vs-rect pairing they don't: the previous `.winding` choice made the
+        // inverse fill cover the *entire* tile instead of just its edge, flooding the whole
+        // background with opaque shadow color and hiding the gradient/highlight/grain beneath
+        // it. `.evenOdd` is safe here specifically because `clipPath` doesn't self-overlap; see
+        // `drawEngravedMark` for why the stroked hands clip needs `.winding` instead.
         drawInsetShadow(
-            clip: clipPath, context: context, color: tileShadeGreen,
+            clip: clipPath, fillRule: .evenOdd, context: context, color: tileShadeGreen,
             offset: CGSize(width: 0, height: 3.2), blur: 3.0, opacity: 0.38, scale: scale
         )
     }
@@ -282,11 +292,28 @@ public enum RatchetIcon {
     /// look right at grid scale renders as a near-invisible fraction of a device pixel once the
     /// grid is scaled up to icon size; this was found by isolating the trick on a plain shape
     /// with no scale transform, where the same numbers looked exactly as intended.
+    ///
+    /// `fillRule` is a caller-supplied parameter, applied to *both* the clip and the inverse
+    /// fill (they must agree), because "the right rule" depends on what `clip` actually is:
+    /// `bezelPath()`'s own `.evenOdd` genuinely punches the face out of the ring, but `asCGPath`
+    /// (below) drops `NSBezierPath.windingRule` in translation, so that choice doesn't survive
+    /// into the `CGPath` and has to be re-supplied here. A stroked hands outline is a different
+    /// shape entirely: `handsPath()` emits two subpaths that both start at the clock's centre, so
+    /// once stroked with round caps their outlines overlap on a disc at the centre and along both
+    /// hand bodies. Under `.evenOdd` that self-overlap is XORed *out* of the clip — which used to
+    /// punch a hole out of the engraving at exactly the point the two hands meet, plus a spurious
+    /// dark ring around it from the hole's own edge. `.winding` treats the overlap as solid, which
+    /// is what a stroked outline actually is.
     private static func drawInsetShadow(
-        clip: CGPath, context: CGContext, color: NSColor, offset: CGSize, blur: CGFloat, opacity: CGFloat,
-        scale: CGFloat
+        clip: CGPath, fillRule: CGPathFillRule, context: CGContext, color: NSColor, offset: CGSize, blur: CGFloat,
+        opacity: CGFloat, scale: CGFloat
     ) {
-        let bigRect = tileRect.insetBy(dx: -60, dy: -60)
+        // Sized off `clip`'s own bounds (with margin for the blur/offset) rather than the fixed
+        // `tileRect`, so the inverse-shape trick — which only works if this rect strictly
+        // contains `clip` — stays correct for any clip passed in, not just ones that happen to
+        // sit inside the 64-unit tile grid.
+        let margin = max(blur, abs(offset.width), abs(offset.height)) * 4 + 8
+        let bigRect = clip.boundingBoxOfPath.insetBy(dx: -margin, dy: -margin)
         let inverse = CGMutablePath()
         inverse.addRect(bigRect)
         inverse.addPath(clip)
@@ -296,11 +323,17 @@ public enum RatchetIcon {
 
         context.saveGState()
         context.addPath(clip)
-        context.clip(using: .evenOdd)
+        context.clip(using: fillRule)
         context.setShadow(offset: scaledOffset, blur: scaledBlur, color: color.withAlphaComponent(opacity).cgColor)
         context.addPath(inverse)
-        context.setFillColor(color.withAlphaComponent(0.9).cgColor)
-        context.fillPath(using: .evenOdd)
+        // Filled fully opaque, with `opacity` carried entirely by the shadow color set above:
+        // CoreGraphics modulates a shadow by the alpha of the content casting it, so filling this
+        // at anything less than 1.0 silently discounted the caller's `opacity` a second time
+        // (a requested 0.38 rendered as ≈0.34). This is a small, deliberate visual change from
+        // the previous 0.9 fill — both inset shadows (the tile's edge shading and the mark's
+        // engraving) are now very slightly darker than they were.
+        context.setFillColor(color.withAlphaComponent(1.0).cgColor)
+        context.fillPath(using: fillRule)
         context.restoreGState()
     }
 
@@ -311,18 +344,21 @@ public enum RatchetIcon {
     private static func drawEngravedMark(context: CGContext, scale: CGFloat) {
         draw(bezelColor: .white, handColor: .white, size: gridSize)
 
+        // `bezelPath()` needs `.evenOdd` (it punches the face circle out of the toothed ring —
+        // see its own `windingRule` assignment). The stroked hands outline needs `.winding`: see
+        // `drawInsetShadow`'s doc comment for why the two clips can't share a rule.
         let bezelClip = bezelPath().asCGPath
         let handsClip = handsPath().asCGPath.copy(
             strokingWithWidth: handWidth, lineCap: .round, lineJoin: .round, miterLimit: 10
         )
 
-        for clip in [bezelClip, handsClip] {
+        for (clip, fillRule) in [(bezelClip, CGPathFillRule.evenOdd), (handsClip, .winding)] {
             drawInsetShadow(
-                clip: clip, context: context, color: markEngraveShadow,
+                clip: clip, fillRule: fillRule, context: context, color: markEngraveShadow,
                 offset: CGSize(width: 0, height: 1.0), blur: 1.0, opacity: 0.55, scale: scale
             )
             drawInsetShadow(
-                clip: clip, context: context, color: .white,
+                clip: clip, fillRule: fillRule, context: context, color: .white,
                 offset: CGSize(width: 0, height: -0.6), blur: 0.8, opacity: 0.40, scale: scale
             )
         }

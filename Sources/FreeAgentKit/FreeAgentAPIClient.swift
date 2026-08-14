@@ -178,7 +178,12 @@ public final class FreeAgentAPIClient {
         }
         let task = Task<FreeAgentTokens, Error> { [self] in
             let refreshed = try await refreshTokens(currentRefreshToken)
-            tokenStore.save(refreshed)
+            // A failed persist is fatal to the session even though `refreshed` is valid right
+            // now: every request reloads from the Keychain, so the next one would pick up the
+            // old refresh token that FreeAgent has already rotated away and 401. Failing here
+            // with an accurate message beats succeeding once and then reporting a mysterious
+            // "session expired" on the following request.
+            guard tokenStore.save(refreshed) else { throw FreeAgentError.credentialStorageFailed }
             return refreshed
         }
         inFlightRefresh = task
@@ -192,11 +197,24 @@ public final class FreeAgentAPIClient {
             tokens = try await refreshTokensShared(currentRefreshToken: tokens.refreshToken)
         }
 
-        var url = path.hasPrefix("http") ? URL(string: path)! : environment.apiBaseURL.appendingPathComponent(path)
+        // Thrown rather than force-unwrapped: `path` is frequently a resource URL taken verbatim
+        // from a FreeAgent response body (see FreeAgentDTOs), so a single malformed value in an
+        // API response would otherwise take down the whole menu-bar app instead of surfacing a
+        // recoverable error.
+        var url: URL
+        if path.hasPrefix("http") {
+            guard let parsed = URL(string: path) else { throw FreeAgentError.invalidURL(path) }
+            url = parsed
+        } else {
+            url = environment.apiBaseURL.appendingPathComponent(path)
+        }
         if !query.isEmpty {
-            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                throw FreeAgentError.invalidURL(url.absoluteString)
+            }
             components.queryItems = query
-            url = components.url!
+            guard let queried = components.url else { throw FreeAgentError.invalidURL(url.absoluteString) }
+            url = queried
         }
         var request = URLRequest(url: url)
         request.httpMethod = method

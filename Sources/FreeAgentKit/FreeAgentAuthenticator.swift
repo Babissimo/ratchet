@@ -31,16 +31,28 @@ public final class FreeAgentAuthenticator {
 
     /// Builds the browser URL to open, and the CSRF nonce the eventual
     /// callback's `state` must match.
+    ///
+    /// Non-throwing, unlike the request paths in `FreeAgentAPIClient`: every input here is a
+    /// compile-time constant — `environment.authorizeURL` is a URL literal in
+    /// `FreeAgentEnvironment`, and `URLQueryItem` percent-encodes the values — so failure would
+    /// mean the literal itself is malformed, which is a programming error rather than anything
+    /// a user or FreeAgent can provoke. `preconditionFailure` states that invariant instead of
+    /// pushing an impossible error case onto the caller.
     public func buildAuthorizeURL() -> (url: URL, state: String) {
         let state = UUID().uuidString
-        var components = URLComponents(url: environment.authorizeURL, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: environment.authorizeURL, resolvingAgainstBaseURL: false) else {
+            preconditionFailure("FreeAgentEnvironment.authorizeURL is not a valid URL: \(environment.authorizeURL)")
+        }
         components.queryItems = [
             URLQueryItem(name: "client_id", value: FreeAgentSecrets.clientID),
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
             URLQueryItem(name: "state", value: state),
         ]
-        return (components.url!, state)
+        guard let url = components.url else {
+            preconditionFailure("authorize URL query could not be encoded: \(components)")
+        }
+        return (url, state)
     }
 
     /// Validates the callback URL against the nonce from `buildAuthorizeURL`,

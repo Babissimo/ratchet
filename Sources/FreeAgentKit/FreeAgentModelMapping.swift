@@ -1,14 +1,6 @@
 import Foundation
 import RatchetCore
 
-private let freeAgentDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyy-MM-dd"
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.timeZone = TimeZone(identifier: "UTC")
-    return formatter
-}()
-
 extension FreeAgentContactDTO {
     /// FreeAgent's client display name: organisation name if present,
     /// otherwise "First Last".
@@ -47,8 +39,8 @@ extension FreeAgentProjectDTO {
             billingPeriod: billingPeriod.flatMap(BillingPeriod.init(rawValue:)) ?? .hour,
             usesProjectInvoiceSequence: usesProjectInvoiceSequence ?? false,
             contractPoReference: contractPoReference,
-            startsOn: startsOn.flatMap { freeAgentDateFormatter.date(from: $0) },
-            endsOn: endsOn.flatMap { freeAgentDateFormatter.date(from: $0) }
+            startsOn: startsOn.flatMap { CalendarDay.day(from: $0) },
+            endsOn: endsOn.flatMap { CalendarDay.day(from: $0) }
         )
     }
 }
@@ -73,7 +65,10 @@ extension FreeAgentTimeslipDTO {
             clientId: "", // filled in by FreeAgentDataStore, which knows project->client
             projectId: project,
             taskId: task,
-            date: timer?.startFrom ?? freeAgentDateFormatter.date(from: datedOn) ?? Date(),
+            // `startFrom` is a true instant (the timer's start), whereas `datedOn` is a plain
+            // calendar day — parsed as local midnight so it displays as the day the user picked
+            // rather than slipping back one west of UTC.
+            date: timer?.startFrom ?? CalendarDay.day(from: datedOn) ?? Date(),
             hours: Double(hours) ?? 0,
             comment: comment
         )

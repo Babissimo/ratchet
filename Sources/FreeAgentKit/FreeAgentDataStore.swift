@@ -42,9 +42,33 @@ public final class FreeAgentDataStore: DataStore {
             webAppURL = environment.webAppURL(subdomain: company.subdomain)
         }
 
-        let contacts: [FreeAgentContactDTO] = try await apiClient.getList("contacts", listKey: "contacts")
-        let projects: [FreeAgentProjectDTO] = try await apiClient.getList("projects", listKey: "projects")
-        let tasks: [FreeAgentTaskDTO] = try await apiClient.getList("tasks", listKey: "tasks")
+        // A trailing window rather than today-only: the menu's "Recent time entries" list is
+        // meant to be a short history, and "Log past time" writes entries dated in the past —
+        // with a today-only fetch those vanished from the menu on the very next refresh.
+        let today = todayString()
+        let windowStart = dateString(clock().addingTimeInterval(-Self.recentTimeslipWindowDays * 24 * 60 * 60))
+
+        // All five fetched as one concurrent batch: none depends on another's result — the two
+        // timeslip queries only need `currentUserURL` and the date strings above, not
+        // contacts/projects/tasks — and each is paginated, so running them in sequence made a
+        // launch-time refresh cost the sum of every round trip (plus their pages) before the
+        // menu showed anything. `async let` starts its child task at the declaration, not the
+        // `await`, so these all have to be declared together up front to actually overlap.
+        async let contactsFetch: [FreeAgentContactDTO] = apiClient.getList("contacts", listKey: "contacts")
+        async let projectsFetch: [FreeAgentProjectDTO] = apiClient.getList("projects", listKey: "projects")
+        async let tasksFetch: [FreeAgentTaskDTO] = apiClient.getList("tasks", listKey: "tasks")
+        async let recentFetch: [FreeAgentTimeslipDTO] = apiClient.getList(
+            "timeslips", query: [
+                URLQueryItem(name: "from_date", value: windowStart),
+                URLQueryItem(name: "to_date", value: today),
+                URLQueryItem(name: "user", value: currentUserURL),
+            ], listKey: "timeslips"
+        )
+        async let runningFetch = fetchRunningTimeslip()
+
+        let contacts = try await contactsFetch
+        let projects = try await projectsFetch
+        let tasks = try await tasksFetch
 
         // `uniquingKeysWith` rather than `uniqueKeysWithValues`: the latter traps at runtime if
         // pagination ever hands back the same project URL twice (e.g. a page boundary served
@@ -62,27 +86,11 @@ public final class FreeAgentDataStore: DataStore {
             return contact.toRatchetClient(projects: contactProjects)
         }
 
-        // A trailing window rather than today-only: the menu's "Recent time entries" list is
-        // meant to be a short history, and "Log past time" writes entries dated in the past —
-        // with a today-only fetch those vanished from the menu on the very next refresh.
-        let today = todayString()
-        let windowStart = dateString(clock().addingTimeInterval(-Self.recentTimeslipWindowDays * 24 * 60 * 60))
-        let recentTimeslips: [FreeAgentTimeslipDTO] = try await apiClient.getList(
-            "timeslips", query: [
-                URLQueryItem(name: "from_date", value: windowStart),
-                URLQueryItem(name: "to_date", value: today),
-                URLQueryItem(name: "user", value: currentUserURL),
-            ], listKey: "timeslips"
-        )
-        timeslips = recentTimeslips.map { resolvedTimeslip($0) }
-
-        let runningTimeslips: [FreeAgentTimeslipDTO] = try await apiClient.getList(
-            "timeslips", query: [
-                URLQueryItem(name: "view", value: "running"),
-                URLQueryItem(name: "user", value: currentUserURL),
-            ], listKey: "timeslips"
-        )
-        currentRunningTimeslip = runningTimeslips.first.map { resolvedTimeslip($0) }
+        let recentTimeslips = try await recentFetch
+        // Kept sorted ascending by date so the array has one defined order regardless of what
+        // sequence pagination returned; `logTime` preserves it on insert.
+        timeslips = recentTimeslips.map { resolvedTimeslip($0) }.sorted { $0.date < $1.date }
+        currentRunningTimeslip = try await runningFetch
 
         lastRefreshedAt = clock()
     }
@@ -127,18 +135,46 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func stopTimer() async throws -> RatchetTimeslip? {
-        guard let running = currentRunningTimeslip else { return nil }
+        // Falling straight through to `return nil` on an empty cache was a silent failure with
+        // real money attached: the caller discards the result and drops the UI to idle either
+        // way, so a timer the cache had lost (a refresh that raced the running-view query, a
+        // timer started from the FreeAgent web app) kept running server-side and accrued
+        // billable hours with nothing in the menu to suggest it. Ask the server before believing
+        // there's nothing to stop.
+        let running: RatchetTimeslip
+        if let cached = currentRunningTimeslip {
+            running = cached
+        } else if let found = try await fetchRunningTimeslip() {
+            running = found
+        } else {
+            return nil
+        }
         try await apiClient.delete("\(running.id)/timer")
         currentRunningTimeslip = nil
         return running
     }
 
+    /// The authoritative "is anything running for this user" query, shared by `refresh()` and
+    /// `stopTimer()`'s fallback.
+    private func fetchRunningTimeslip() async throws -> RatchetTimeslip? {
+        let running: [FreeAgentTimeslipDTO] = try await apiClient.getList(
+            "timeslips", query: [
+                URLQueryItem(name: "view", value: "running"),
+                URLQueryItem(name: "user", value: currentUserURL),
+            ], listKey: "timeslips"
+        )
+        return running.first.map { resolvedTimeslip($0) }
+    }
+
     public func addClient(
-        name: String, email: String?, phoneNumber: String?, address1: String?,
+        organisationName: String?, firstName: String?, lastName: String?,
+        email: String?, phoneNumber: String?, address1: String?,
         town: String?, postcode: String?, country: String?
     ) async throws -> RatchetClient {
         struct CreateContactBody: Encodable {
             let organisation_name: String?
+            let first_name: String?
+            let last_name: String?
             let email: String?
             let phone_number: String?
             let address1: String?
@@ -149,7 +185,8 @@ public final class FreeAgentDataStore: DataStore {
         let created: FreeAgentContactDTO = try await apiClient.post(
             "contacts", envelopeKey: "contact",
             body: CreateContactBody(
-                organisation_name: name, email: email, phone_number: phoneNumber,
+                organisation_name: organisationName, first_name: firstName, last_name: lastName,
+                email: email, phone_number: phoneNumber,
                 address1: address1, town: town, postcode: postcode, country: country
             )
         )
@@ -177,6 +214,8 @@ public final class FreeAgentDataStore: DataStore {
             let billing_period: String
             let uses_project_invoice_sequence: Bool
             let contract_po_reference: String?
+            let starts_on: String?
+            let ends_on: String?
         }
         let created: FreeAgentProjectDTO = try await apiClient.post(
             "projects", envelopeKey: "project",
@@ -185,7 +224,8 @@ public final class FreeAgentDataStore: DataStore {
                 budget: String(budget), budget_units: budgetUnits.rawValue,
                 hours_per_day: String(hoursPerDay), normal_billing_rate: String(normalBillingRate),
                 billing_period: billingPeriod.rawValue, uses_project_invoice_sequence: usesProjectInvoiceSequence,
-                contract_po_reference: contractPoReference
+                contract_po_reference: contractPoReference,
+                starts_on: startsOn.map(dateString), ends_on: endsOn.map(dateString)
             )
         )
         projectToClientId[created.url] = clientId
@@ -241,7 +281,11 @@ public final class FreeAgentDataStore: DataStore {
             )
         )
         let resolved = resolvedTimeslip(created, clientId: clientId)
-        timeslips.append(resolved)
+        // Inserted in date order, not appended: a back-dated entry appended to the end would
+        // read as the newest thing in the array, which is exactly how it used to jump to the
+        // top of "Recent time entries" until the next refresh reshuffled it.
+        let insertionIndex = timeslips.firstIndex { $0.date > resolved.date } ?? timeslips.endIndex
+        timeslips.insert(resolved, at: insertionIndex)
         return resolved
     }
 
@@ -257,38 +301,21 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     private func withAppendedProject(_ client: RatchetClient, _ project: RatchetProject) -> RatchetClient {
-        RatchetClient(
-            id: client.id, name: client.name, projects: client.projects + [project],
-            email: client.email, phoneNumber: client.phoneNumber, address1: client.address1,
-            town: client.town, postcode: client.postcode, country: client.country
-        )
+        client.withProjects(client.projects + [project])
     }
 
     private func withAppendedTask(_ client: RatchetClient, projectIndex: Int, task: RatchetTask) -> RatchetClient {
-        var projects = client.projects
-        let existing = projects[projectIndex]
-        projects[projectIndex] = RatchetProject(
-            id: existing.id, name: existing.name, tasks: existing.tasks + [task],
-            status: existing.status, currency: existing.currency, budget: existing.budget,
-            budgetUnits: existing.budgetUnits, hoursPerDay: existing.hoursPerDay,
-            normalBillingRate: existing.normalBillingRate, billingPeriod: existing.billingPeriod,
-            usesProjectInvoiceSequence: existing.usesProjectInvoiceSequence,
-            contractPoReference: existing.contractPoReference, startsOn: existing.startsOn, endsOn: existing.endsOn
-        )
-        return RatchetClient(
-            id: client.id, name: client.name, projects: projects,
-            email: client.email, phoneNumber: client.phoneNumber, address1: client.address1,
-            town: client.town, postcode: client.postcode, country: client.country
-        )
+        let existing = client.projects[projectIndex]
+        return client.replacingProject(at: projectIndex, with: existing.withTasks(existing.tasks + [task]))
     }
 
     private func todayString() -> String { dateString(clock()) }
 
+    /// `dated_on` is a plain calendar day — "the day you did the work" — so it has to be the
+    /// user's local day. This used to pin the formatter to UTC, which booked a Los Angeles
+    /// user's evening entry to the following day, and made an Auckland user's "today" resolve
+    /// to yesterday (so the today-filter below missed today's timeslip and created a duplicate).
     private func dateString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter.string(from: date)
+        CalendarDay.dayString(from: date)
     }
 }
