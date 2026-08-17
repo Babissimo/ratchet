@@ -103,6 +103,35 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        // Ask the server first, same as stopTimer()'s fallback: the today-scoped "existing
+        // timeslip for this task" query below only finds a timeslip *created* today, not one
+        // still running from before midnight — FreeAgent doesn't re-date a timeslip's
+        // `dated_on` when its timer crosses a day boundary. Without this check, restarting a
+        // timer for the same task after the day rolled over (app restart, some other code path
+        // re-invoking start) found nothing "for today" and created a second, duplicate timeslip
+        // while the original kept running server-side.
+        let running: RatchetTimeslip?
+        if let cached = currentRunningTimeslip {
+            running = cached
+        } else {
+            running = try await fetchRunningTimeslip()
+        }
+        if let running {
+            if running.taskId == taskId {
+                // Already running for exactly the task being requested — resume it rather than
+                // starting (or creating) a second timeslip.
+                currentRunningTimeslip = running
+                return running
+            }
+            // The menu only ever offers "Start tracking" from the idle screen — never alongside
+            // an active .tracking screen — so a running timeslip for a *different* task here
+            // means local state has drifted from the server (a timer started from the FreeAgent
+            // web app, another device, or a stale cache), not a normal call path. The app has no
+            // multi-timer support (see TODO.md), so surface this rather than silently stopping
+            // someone else's/another device's timer out from under them.
+            throw DataStoreError.underlying("A timer is already running for another task — stop it first.")
+        }
+
         let today = todayString()
         let existing: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
