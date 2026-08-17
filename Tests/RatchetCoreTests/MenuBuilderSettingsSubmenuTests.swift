@@ -8,9 +8,9 @@ import AppKit
 final class MenuBuilderSettingsSubmenuTests: XCTestCase {
     private func noopActions() -> MenuActions {
         MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, quit: {}
         )
     }
 
@@ -70,9 +70,9 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
     func test_refreshItem_invokesRefreshAction() {
         var refreshed = false
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: { refreshed = true }, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, quit: {}
         )
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
         let refreshItem = menu.items[1] as! ClosureMenuItem
@@ -83,9 +83,9 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
     func test_logOutItem_invokesLogOutAction() {
         var loggedOut = false
         let actions = MenuActions(
-            logIn: {}, logOut: { loggedOut = true }, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: { loggedOut = true }, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, quit: {}
         )
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
         let logOutItem = menu.items[6] as! ClosureMenuItem

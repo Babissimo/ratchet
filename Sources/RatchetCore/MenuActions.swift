@@ -3,6 +3,9 @@ public struct MenuActions {
     public let logOut: () -> Void
     public let startTracking: (TrackedTaskRef) -> Void
     public let stopTracking: () -> Void
+    /// Stops whatever's currently tracking and starts the picked task instead, in one menu
+    /// action — the "Switch task" submenu's leaf for an existing task.
+    public let switchTask: (TrackedTaskRef) -> Void
     public let refresh: () -> Void
     public let toggleLaunchAtLogin: () -> Void
     public let openFreeAgent: () -> Void
@@ -11,6 +14,11 @@ public struct MenuActions {
     public let addProject: (_ clientId: String) -> Void
     public let logPastTime: (_ clientId: String, _ projectId: String, _ taskId: String) -> Void
     public let logPastTimeForNewTask: (_ clientId: String, _ projectId: String) -> Void
+    /// "Switch task"'s "New task…" leaf: create the task, then switch tracking onto it. Kept
+    /// distinct from `addTask` (which only ever starts tracking a fresh task from idle, with
+    /// nothing running to stop first) so that path doesn't have to reason about a switch it
+    /// never performs.
+    public let switchToNewTask: (_ clientId: String, _ projectId: String) -> Void
     public let quit: () -> Void
 
     public init(
@@ -18,6 +26,7 @@ public struct MenuActions {
         logOut: @escaping () -> Void,
         startTracking: @escaping (TrackedTaskRef) -> Void,
         stopTracking: @escaping () -> Void,
+        switchTask: @escaping (TrackedTaskRef) -> Void,
         refresh: @escaping () -> Void,
         toggleLaunchAtLogin: @escaping () -> Void,
         openFreeAgent: @escaping () -> Void,
@@ -26,12 +35,14 @@ public struct MenuActions {
         addProject: @escaping (_ clientId: String) -> Void,
         logPastTime: @escaping (_ clientId: String, _ projectId: String, _ taskId: String) -> Void,
         logPastTimeForNewTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
+        switchToNewTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
         quit: @escaping () -> Void
     ) {
         self.logIn = logIn
         self.logOut = logOut
         self.startTracking = startTracking
         self.stopTracking = stopTracking
+        self.switchTask = switchTask
         self.refresh = refresh
         self.toggleLaunchAtLogin = toggleLaunchAtLogin
         self.openFreeAgent = openFreeAgent
@@ -40,6 +51,7 @@ public struct MenuActions {
         self.addProject = addProject
         self.logPastTime = logPastTime
         self.logPastTimeForNewTask = logPastTimeForNewTask
+        self.switchToNewTask = switchToNewTask
         self.quit = quit
     }
 }
