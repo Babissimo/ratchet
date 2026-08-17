@@ -371,6 +371,13 @@ public final class FreeAgentDataStore: DataStore {
         if let index = timeslips.firstIndex(where: { $0.id == id }) {
             timeslips[index] = resolved
         }
+        // `currentRunningTimeslip` is a separate stored property, not derived from `timeslips`
+        // — "Switch task" edits a *running* timeslip's task in place (see `StatusItemController.
+        // switchTask`) without stopping its timer, so without this the cache would keep
+        // pointing at the pre-edit task/project/client until the next `refresh()`.
+        if currentRunningTimeslip?.id == id {
+            currentRunningTimeslip = resolved
+        }
         return resolved
     }
 

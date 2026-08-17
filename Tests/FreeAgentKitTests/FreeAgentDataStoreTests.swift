@@ -272,6 +272,39 @@ final class FreeAgentDataStoreTests: XCTestCase {
         tokenStore.clear()
     }
 
+    func test_updateTimeslip_onTheRunningEntry_updatesCurrentRunningTimeslipToo() async throws {
+        // "Switch task" edits a *running* timeslip's task in place (rather than stopping and
+        // starting a new one) so the timer keeps counting continuously — `currentRunningTimeslip`
+        // is a separate stored property from `timeslips`, so without this fix it would keep
+        // pointing at the pre-edit task/project/client until the next `refresh()`.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+            (match: "/timeslips/55", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/2","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        _ = try await store.startTimer(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+        )
+        XCTAssertEqual(store.currentRunningTimeslip?.taskId, "https://api.sandbox.freeagent.com/v2/tasks/1")
+
+        _ = try await store.updateTimeslip(
+            id: "https://api.sandbox.freeagent.com/v2/timeslips/55",
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/2",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/2",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/2",
+            date: CalendarDay.day(from: "2026-08-16")!,
+            hours: 2.0,
+            comment: nil
+        )
+
+        XCTAssertEqual(store.currentRunningTimeslip?.taskId, "https://api.sandbox.freeagent.com/v2/tasks/2")
+        XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
+        tokenStore.clear()
+    }
+
     func test_stopTimer_queriesServerAndReturnsNilWhenCacheIsEmptyAndNothingIsRunning() async throws {
         // No `refresh()` here, so `currentRunningTimeslip` starts nil — the case the
         // server-fallback in `stopTimer()` exists for (see its doc comment): an empty cache

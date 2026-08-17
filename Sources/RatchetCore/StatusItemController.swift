@@ -137,21 +137,25 @@ public final class StatusItemController {
             guard let self else { return }
             Task { @MainActor in
                 do {
-                    // Stop server-side before starting the new timer rather than relying on
-                    // FreeAgent to implicitly retire the old one — `startTimer` only ever
-                    // touches the timeslip it's given, so without this the previous task's
-                    // timer would keep accruing hours alongside the new one.
-                    _ = try await self.dataStore.stopTimer()
-                    // Reflect the stop in appState immediately, before attempting the new
-                    // start: if startTimer below throws (dropped network, deleted task), the
-                    // menu must show idle rather than keep "Stop tracking <old task>" with its
-                    // elapsed timer still counting up over a task that's already stopped
-                    // server-side.
-                    self.appState.stopTracking()
-                    let timeslip = try await self.dataStore.startTimer(
-                        taskId: task.taskId, projectId: task.projectId, clientId: task.clientId
+                    // Reassigns the *running* timeslip's task in place (a PUT on its task/
+                    // project/client, same hours/date/comment) rather than stopping and
+                    // starting a new one — the point of "Switch task" is to keep tracking
+                    // continuously against a different task, not to end one entry and begin
+                    // another. Stop+restart was the first implementation, but it split what the
+                    // user experiences as one continuous stretch of work into two timeslips.
+                    guard let running = self.dataStore.currentRunningTimeslip else {
+                        self.presentAPIError(DataStoreError.notFound, action: "switch tasks")
+                        return
+                    }
+                    _ = try await self.dataStore.updateTimeslip(
+                        id: running.id,
+                        taskId: task.taskId, projectId: task.projectId, clientId: task.clientId,
+                        date: running.date, hours: running.hours, comment: running.comment
                     )
-                    self.appState.startTracking(task, startedAt: timeslip.date)
+                    // Reassigns `appState.trackingTask` without disturbing `trackingStartedAt`
+                    // — the timer never stopped, so the elapsed-time display must keep counting
+                    // from its original start instant, not reset to now.
+                    self.appState.retask(task)
                 } catch {
                     self.presentAPIError(error, action: "switch tasks")
                 }
@@ -591,23 +595,30 @@ public final class StatusItemController {
             guard let client = self.dataStore.clients.first(where: { $0.id == clientId }),
                   let project = client.projects.first(where: { $0.id == projectId })
             else { return }
+            let ref = TrackedTaskRef(
+                clientId: client.id, clientName: client.name,
+                projectId: project.id, projectName: project.name,
+                taskId: task.id, taskName: task.name
+            )
             do {
                 if switchingFromRunningTimer {
-                    // See `switchTask`'s comment: stop the old timer server-side before
-                    // starting the new one rather than trusting FreeAgent to retire it.
-                    _ = try await self.dataStore.stopTimer()
-                    // Reflect the stop immediately, same as `switchTask` — if `startTimer`
-                    // below throws, the menu must show idle rather than keep the old task
-                    // displayed as tracking over a timer that's already stopped server-side.
-                    self.appState.stopTracking()
+                    // See `switchTask`'s comment: reassign the running timeslip's task in
+                    // place rather than stopping and starting a new one, so switching to a
+                    // freshly-created task keeps the elapsed time continuous too.
+                    guard let running = self.dataStore.currentRunningTimeslip else {
+                        self.presentAPIError(DataStoreError.notFound, action: "switch tasks")
+                        return
+                    }
+                    _ = try await self.dataStore.updateTimeslip(
+                        id: running.id,
+                        taskId: task.id, projectId: projectId, clientId: clientId,
+                        date: running.date, hours: running.hours, comment: running.comment
+                    )
+                    self.appState.retask(ref)
+                } else {
+                    let timeslip = try await self.dataStore.startTimer(taskId: task.id, projectId: projectId, clientId: clientId)
+                    self.appState.startTracking(ref, startedAt: timeslip.date)
                 }
-                let timeslip = try await self.dataStore.startTimer(taskId: task.id, projectId: projectId, clientId: clientId)
-                let ref = TrackedTaskRef(
-                    clientId: client.id, clientName: client.name,
-                    projectId: project.id, projectName: project.name,
-                    taskId: task.id, taskName: task.name
-                )
-                self.appState.startTracking(ref, startedAt: timeslip.date)
             } catch {
                 self.presentAPIError(error, action: switchingFromRunningTimer ? "switch tasks" : "start tracking the new task")
             }
@@ -782,35 +793,96 @@ public final class StatusItemController {
         return formatter
     }()
 
-    /// One flat entry per (client, project, task) triple, as "Client · Project · Task" — mirrors
-    /// `MenuBuilder.path(for:in:)`'s display string so the edit form's picker reads the same as
-    /// the row the user just clicked. A three-level cascading picker (matching "Start timer"/
-    /// "Log past time") would need live target-action wiring between three `NSPopUpButton`s that
-    /// nothing else in this file does; a single flat list keeps the same "reassign the task"
-    /// capability without introducing that machinery for one form.
-    private struct TaskAssignment {
-        let clientId: String
-        let projectId: String
-        let taskId: String
-    }
+    /// Three popups — Client, Project, Task — that keep each other in sync, the direct
+    /// equivalent of `MenuBuilder`'s cascading client→project→task submenus for a form context
+    /// where nested submenus aren't available. AppKit's target-action needs an `NSObject` to
+    /// receive `@objc` selectors, so this owns the re-population wiring between the three
+    /// popups rather than that logic living inline in `runEditTimeEntryForm`.
+    @MainActor
+    private final class CascadingTaskPicker: NSObject {
+        let clientPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let projectPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let taskPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        private let clients: [RatchetClient]
+        /// Fires whenever the user changes any of the three popups (not on programmatic
+        /// `select(...)` calls during setup) — the form uses this to tell "the user made an
+        /// explicit choice" apart from "this is just the default first item."
+        var onChange: (() -> Void)?
 
-    private func makeTaskAssignmentPopup(dataStore: DataStore, controlWidth: CGFloat) -> (popup: NSPopUpButton, assignments: [TaskAssignment]) {
-        var assignments: [TaskAssignment] = []
-        var titles: [String] = []
-        for client in dataStore.clients {
-            for project in client.projects {
-                for task in project.tasks {
-                    assignments.append(TaskAssignment(clientId: client.id, projectId: project.id, taskId: task.id))
-                    titles.append("\(client.name) · \(project.name) · \(task.name)")
-                }
+        init(clients: [RatchetClient], controlWidth: CGFloat) {
+            self.clients = clients
+            super.init()
+            for popup in [clientPopup, projectPopup, taskPopup] {
+                popup.translatesAutoresizingMaskIntoConstraints = false
+                popup.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
             }
+            clientPopup.toolTip = "Which client this time is booked against."
+            projectPopup.toolTip = "Which of the client's projects this time is booked against."
+            taskPopup.toolTip = "Which of the project's tasks this time is booked against."
+            clientPopup.addItems(withTitles: clients.map(\.name))
+            clientPopup.target = self
+            clientPopup.action = #selector(clientChanged)
+            projectPopup.target = self
+            projectPopup.action = #selector(projectChanged)
+            taskPopup.target = self
+            taskPopup.action = #selector(taskChanged)
+            repopulateProjects()
+            repopulateTasks()
         }
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        popup.translatesAutoresizingMaskIntoConstraints = false
-        popup.addItems(withTitles: titles)
-        popup.toolTip = "Which client, project, and task this time is booked against."
-        popup.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
-        return (popup, assignments)
+
+        var selectedClient: RatchetClient? {
+            clients.indices.contains(clientPopup.indexOfSelectedItem) ? clients[clientPopup.indexOfSelectedItem] : nil
+        }
+        var selectedProject: RatchetProject? {
+            guard let client = selectedClient, client.projects.indices.contains(projectPopup.indexOfSelectedItem) else { return nil }
+            return client.projects[projectPopup.indexOfSelectedItem]
+        }
+        var selectedTask: RatchetTask? {
+            guard let project = selectedProject, project.tasks.indices.contains(taskPopup.indexOfSelectedItem) else { return nil }
+            return project.tasks[taskPopup.indexOfSelectedItem]
+        }
+
+        /// Preselects a specific (client, project, task) triple, e.g. the entry being edited's
+        /// current assignment. Returns false the moment any part of the triple isn't found in
+        /// the current list (an archived project, a deleted task) — the caller decides how to
+        /// treat that rather than this silently leaving the popups on whatever they defaulted
+        /// to (index 0 of each, once populated).
+        func select(clientId: String, projectId: String, taskId: String) -> Bool {
+            guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { return false }
+            clientPopup.selectItem(at: clientIndex)
+            repopulateProjects()
+            guard let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId }) else { return false }
+            projectPopup.selectItem(at: projectIndex)
+            repopulateTasks()
+            guard let taskIndex = clients[clientIndex].projects[projectIndex].tasks.firstIndex(where: { $0.id == taskId }) else { return false }
+            taskPopup.selectItem(at: taskIndex)
+            return true
+        }
+
+        @objc private func clientChanged() {
+            repopulateProjects()
+            repopulateTasks()
+            onChange?()
+        }
+
+        @objc private func projectChanged() {
+            repopulateTasks()
+            onChange?()
+        }
+
+        @objc private func taskChanged() {
+            onChange?()
+        }
+
+        private func repopulateProjects() {
+            projectPopup.removeAllItems()
+            projectPopup.addItems(withTitles: selectedClient?.projects.map(\.name) ?? [])
+        }
+
+        private func repopulateTasks() {
+            taskPopup.removeAllItems()
+            taskPopup.addItems(withTitles: selectedProject?.tasks.map(\.name) ?? [])
+        }
     }
 
     private func presentEditTimeEntryForm(entry: RatchetTimeslip) {
@@ -827,22 +899,14 @@ public final class StatusItemController {
         alert.addButton(withTitle: "Cancel")
 
         let controlWidth: CGFloat = 180
-        let (taskPopup, assignments) = makeTaskAssignmentPopup(dataStore: dataStore, controlWidth: controlWidth)
-        let matchedIndex = assignments.firstIndex(where: {
-            $0.clientId == entry.clientId && $0.projectId == entry.projectId && $0.taskId == entry.taskId
-        })
+        let picker = CascadingTaskPicker(clients: dataStore.clients, controlWidth: controlWidth)
         // When the entry's original task isn't in the current list (its project was archived
         // since the last refresh, or this is an "unknown task" entry with an unresolved
-        // clientId), leaving the popup on AppKit's default first-item selection would silently
-        // reassign the entry to whatever task happens to be first in `dataStore.clients` order
-        // the moment the user clicks Save meaning only to fix the duration or comment. A
-        // placeholder that isn't a valid assignment forces an explicit choice instead.
-        if let matchedIndex {
-            taskPopup.selectItem(at: matchedIndex)
-        } else {
-            taskPopup.insertItem(withTitle: "Select the correct task…", at: 0)
-            taskPopup.selectItem(at: 0)
-        }
+        // clientId), the popups fall back to AppKit's default first-item selection at every
+        // level — `matched` tracks that this is *not* the entry's real assignment, so Save stays
+        // disabled (see `isValid` below) until the user explicitly picks something themselves.
+        let matched = picker.select(clientId: entry.clientId, projectId: entry.projectId, taskId: entry.taskId)
+        var selectionConfirmed = matched
 
         let logTimeFields = makeLogTimeFields(controlWidth: controlWidth)
         let datePicker = logTimeFields.datePicker
@@ -852,7 +916,11 @@ public final class StatusItemController {
         durationField.stringValue = DurationFormatter.hoursAndMinutes(entry.hours)
         commentField.stringValue = entry.comment ?? ""
 
-        let rows: [NSView] = [labeledRow("Task *", taskPopup, required: true)] + logTimeFields.rows
+        let rows: [NSView] = [
+            labeledRow("Client *", picker.clientPopup, required: true),
+            labeledRow("Project *", picker.projectPopup, required: true),
+            labeledRow("Task *", picker.taskPopup, required: true),
+        ] + logTimeFields.rows
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.spacing = 8
@@ -861,9 +929,17 @@ public final class StatusItemController {
 
         alert.accessoryView = Self.frameBasedContainer(wrapping: stack)
         alert.window.initialFirstResponder = durationField
-        let observers = liveValidate(button: saveButton, fields: [durationField]) {
-            guard !assignments.isEmpty else { return false }
+        let isValid: () -> Bool = {
+            guard selectionConfirmed, picker.selectedTask != nil else { return false }
             return DurationFormatter.parseHoursAndMinutes(durationField.stringValue) != nil
+        }
+        let observers = liveValidate(button: saveButton, fields: [durationField], isValid: isValid)
+        // Changing any of the three popups counts as an explicit choice — re-validate (which
+        // also flips `selectionConfirmed` on for the not-`matched` case) exactly like a
+        // keystroke in `durationField` already does via `liveValidate` above.
+        picker.onChange = { [weak saveButton] in
+            selectionConfirmed = true
+            saveButton?.isEnabled = isValid()
         }
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -874,34 +950,28 @@ public final class StatusItemController {
             presentValidationError("Enter a duration as hours:minutes, e.g. 1:30 (max 24:00).")
             return
         }
-        // When a placeholder was inserted (see above), its index offsets every real assignment
-        // by one; selecting it and clicking Save must fail the same way as `assignments`
-        // somehow emptying mid-modal — fail loudly rather than silently keeping (or guessing)
-        // the entry's task.
-        let selectedIndex = matchedIndex == nil ? taskPopup.indexOfSelectedItem - 1 : taskPopup.indexOfSelectedItem
-        guard assignments.indices.contains(selectedIndex) else {
-            presentValidationError("Select a task.")
+        // Guarded by `isValid` above (the Save button is disabled otherwise), so only reachable
+        // if the selection somehow became invalid between the button enabling and Save being
+        // clicked — fail loudly rather than silently keeping (or guessing) the entry's task.
+        guard let client = picker.selectedClient, let project = picker.selectedProject, let task = picker.selectedTask else {
+            presentValidationError("Select a client, project, and task.")
             return
         }
-        let assignment = assignments[selectedIndex]
 
         Task { @MainActor in
             do {
                 _ = try await self.dataStore.updateTimeslip(
                     id: entry.id,
-                    taskId: assignment.taskId,
-                    projectId: assignment.projectId,
-                    clientId: assignment.clientId,
+                    taskId: task.id,
+                    projectId: project.id,
+                    clientId: client.id,
                     date: datePicker.dateValue,
                     hours: hours,
                     comment: TaskNameValidator.validate(commentField.stringValue)
                 )
                 self.rebuild()
 
-                let taskName = self.dataStore.clients.first(where: { $0.id == assignment.clientId })?
-                    .projects.first(where: { $0.id == assignment.projectId })?
-                    .tasks.first(where: { $0.id == assignment.taskId })?
-                    .name ?? "the task"
+                let taskName = task.name
                 self.presentLoggedConfirmation(taskName: taskName, hours: hours, date: datePicker.dateValue)
             } catch {
                 self.presentAPIError(error, action: "update the time entry")
