@@ -14,9 +14,10 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
 
     private func noopActions() -> MenuActions {
         MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
+            switchToNewTask: { _, _ in }, quit: {}
         )
     }
 
@@ -41,9 +42,10 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
     func test_idleWithHistory_topItemStartsTrackingTheMostRecentTask() {
         var started: TrackedTaskRef?
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
+            switchToNewTask: { _, _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()
@@ -71,20 +73,63 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         // Client/project context is coupled into the same row via attributedTitle, matching
         // the "Start tracking" row's treatment.
         XCTAssertEqual(menu.items[1].attributedTitle?.string, "Stop tracking Development\nAcme · Website Redesign")
-        XCTAssertTrue(menu.items[2].isSeparatorItem)
-        XCTAssertEqual(menu.items[3].title, "Log past time")
-        XCTAssertEqual(menu.items[4].title, "Recent time entries")
-        XCTAssertTrue(menu.items[5].isSeparatorItem)
-        XCTAssertEqual(menu.items[6].title, "Settings")
-        XCTAssertEqual(menu.items[7].title, "Quit")
+        XCTAssertEqual(menu.items[2].title, "Switch task")
+        XCTAssertNotNil(menu.items[2].submenu)
+        XCTAssertTrue(menu.items[3].isSeparatorItem)
+        XCTAssertEqual(menu.items[4].title, "Log past time")
+        XCTAssertEqual(menu.items[5].title, "Recent time entries")
+        XCTAssertTrue(menu.items[6].isSeparatorItem)
+        XCTAssertEqual(menu.items[7].title, "Settings")
+        XCTAssertEqual(menu.items[8].title, "Quit")
+    }
+
+    func test_tracking_switchTaskSubmenuMirrorsClientProjectTaskTree() {
+        let state = AppState()
+        state.logIn()
+        state.startTracking(sampleTask)
+
+        let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions())
+        let switchSubmenu = menu.items[2].submenu!
+
+        // Same shape as "Start timer"/"Log past time": one item per client, plus "Add client…".
+        XCTAssertTrue(switchSubmenu.items.contains { $0.title == "Add client…" })
+        let clientItem = switchSubmenu.items.first { $0.title == "Acme" }
+        XCTAssertNotNil(clientItem?.submenu)
+        let projectItem = clientItem?.submenu?.items.first { $0.title == "Website Redesign" }
+        XCTAssertNotNil(projectItem?.submenu)
+        XCTAssertTrue(projectItem?.submenu?.items.contains { $0.title == "Development" } ?? false)
+        XCTAssertTrue(projectItem?.submenu?.items.contains { $0.title == "New task…" } ?? false)
+    }
+
+    func test_tracking_switchTaskLeafStopsCurrentAndSwitchesToPickedTask() {
+        var switchedTo: TrackedTaskRef?
+        let actions = MenuActions(
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { switchedTo = $0 },
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
+            switchToNewTask: { _, _ in }, quit: {}
+        )
+        let state = AppState()
+        state.logIn()
+        state.startTracking(sampleTask)
+
+        let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: actions)
+        let switchSubmenu = menu.items[2].submenu!
+        let clientItem = switchSubmenu.items.first { $0.title == "Acme" }!
+        let projectItem = clientItem.submenu!.items.first { $0.title == "Website Redesign" }!
+        let taskItem = projectItem.submenu!.items.first { $0.title == "Development" } as! ClosureMenuItem
+        _ = taskItem.target?.perform(taskItem.action, with: taskItem)
+
+        XCTAssertEqual(switchedTo, sampleTask)
     }
 
     func test_tracking_stopItemInvokesStopTracking() {
         var stopped = false
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: { stopped = true },
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: { stopped = true }, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
+            switchToNewTask: { _, _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()

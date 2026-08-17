@@ -133,6 +133,24 @@ public final class StatusItemController {
                 }
             }
         },
+        switchTask: { [weak self] task in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    // Stop server-side before starting the new timer rather than relying on
+                    // FreeAgent to implicitly retire the old one — `startTimer` only ever
+                    // touches the timeslip it's given, so without this the previous task's
+                    // timer would keep accruing hours alongside the new one.
+                    _ = try await self.dataStore.stopTimer()
+                    let timeslip = try await self.dataStore.startTimer(
+                        taskId: task.taskId, projectId: task.projectId, clientId: task.clientId
+                    )
+                    self.appState.startTracking(task, startedAt: timeslip.date)
+                } catch {
+                    self.presentAPIError(error, action: "switch tasks")
+                }
+            }
+        },
         refresh: { [weak self] in
             guard let self else { return }
             Task { @MainActor in
@@ -190,6 +208,9 @@ public final class StatusItemController {
         },
         logPastTimeForNewTask: { [weak self] clientId, projectId in
             self?.presentLogPastTimeForNewTaskForm(clientId: clientId, projectId: projectId)
+        },
+        switchToNewTask: { [weak self] clientId, projectId in
+            self?.presentAddTaskPrompt(clientId: clientId, projectId: projectId, switchingFromRunningTimer: true)
         },
         quit: {
             NSApp.terminate(nil)
@@ -357,12 +378,12 @@ public final class StatusItemController {
         }
     }
 
-    private func presentAddTaskPrompt(clientId: String, projectId: String) {
+    private func presentAddTaskPrompt(clientId: String, projectId: String, switchingFromRunningTimer: Bool = false) {
         // Defer until the menu-tracking run loop session has unwound: running a modal
         // session synchronously from inside menu action dispatch is a known AppKit hazard
         // (the alert can appear behind/non-key, or interact oddly with the just-closed menu).
         DispatchQueue.main.async { [weak self] in
-            self?.runAddTaskPrompt(clientId: clientId, projectId: projectId)
+            self?.runAddTaskPrompt(clientId: clientId, projectId: projectId, switchingFromRunningTimer: switchingFromRunningTimer)
         }
     }
 
@@ -491,7 +512,7 @@ public final class StatusItemController {
         return text.isEmpty ? .some(nil) : .some(Double(text))
     }
 
-    private func runAddTaskPrompt(clientId: String, projectId: String) {
+    private func runAddTaskPrompt(clientId: String, projectId: String, switchingFromRunningTimer: Bool = false) {
         let alert = NSAlert()
         alert.icon = Self.formIcon
         alert.messageText = "New Task"
@@ -553,14 +574,20 @@ public final class StatusItemController {
             }
             self.rebuild()
 
-            // "New task…" is only reachable from the Start > drill-down, so creating one here
-            // means the user wants to start tracking it immediately — not just add it. The task
+            // "New task…" is reachable from both the Start > drill-down (nothing running yet)
+            // and Switch task > drill-down (something already is) — either way, creating one
+            // here means the user wants to track it immediately, not just add it. The task
             // itself is already created at this point, so a failure here gets its own message
             // rather than implying the task creation failed too.
             guard let client = self.dataStore.clients.first(where: { $0.id == clientId }),
                   let project = client.projects.first(where: { $0.id == projectId })
             else { return }
             do {
+                if switchingFromRunningTimer {
+                    // See `switchTask`'s comment: stop the old timer server-side before
+                    // starting the new one rather than trusting FreeAgent to retire it.
+                    _ = try await self.dataStore.stopTimer()
+                }
                 let timeslip = try await self.dataStore.startTimer(taskId: task.id, projectId: projectId, clientId: clientId)
                 let ref = TrackedTaskRef(
                     clientId: client.id, clientName: client.name,
@@ -569,7 +596,7 @@ public final class StatusItemController {
                 )
                 self.appState.startTracking(ref, startedAt: timeslip.date)
             } catch {
-                self.presentAPIError(error, action: "start tracking the new task")
+                self.presentAPIError(error, action: switchingFromRunningTimer ? "switch tasks" : "start tracking the new task")
             }
         }
     }

@@ -66,6 +66,9 @@ public enum MenuBuilder {
             secondLine: "\(task.clientName) · \(task.projectName)"
         )
         menu.addItem(stopItem)
+        let switchItem = NSMenuItem(title: "Switch task", action: nil, keyEquivalent: "")
+        switchItem.submenu = buildSwitchTaskSubmenu(dataStore: dataStore, actions: actions)
+        menu.addItem(switchItem)
         menu.addItem(.separator())
         let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
@@ -103,6 +106,21 @@ public enum MenuBuilder {
         taskPicker(dataStore: dataStore, actions: actions, leaves: TaskPickerLeaves(
             chooseTask: { client, project, task in actions.logPastTime(client.id, project.id, task.id) },
             chooseNewTask: { client, project in actions.logPastTimeForNewTask(client.id, project.id) }
+        ))
+    }
+
+    /// "Switch task", reachable only from the tracking screen, is the same picker whose leaves
+    /// stop the running timer and start tracking the picked (or newly created) task instead.
+    static func buildSwitchTaskSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
+        taskPicker(dataStore: dataStore, actions: actions, leaves: TaskPickerLeaves(
+            chooseTask: { client, project, task in
+                actions.switchTask(TrackedTaskRef(
+                    clientId: client.id, clientName: client.name,
+                    projectId: project.id, projectName: project.name,
+                    taskId: task.id, taskName: task.name
+                ))
+            },
+            chooseNewTask: { client, project in actions.switchToNewTask(client.id, project.id) }
         ))
     }
 
