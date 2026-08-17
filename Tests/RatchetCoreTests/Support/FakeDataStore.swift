@@ -13,12 +13,29 @@ final class FakeDataStore: DataStore {
     /// id of the timeslip with a currently-running timer, if any.
     private var runningTimeslipId: String?
 
+    /// Computed, not stored: `runningTimeslipId` is the single source of truth (kept in sync by
+    /// `startTimer`/`stopTimer`), so deriving this from it — same as `FreeAgentDataStore` derives
+    /// its own stored property from the API's running-timeslip response — rules out the two ever
+    /// disagreeing.
+    var currentRunningTimeslip: RatchetTimeslip? {
+        guard let runningTimeslipId else { return nil }
+        return timeslips.first { $0.id == runningTimeslipId }
+    }
+
     private let clock: () -> Date
 
     init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
         self.clients = clients
         self.accountEmail = accountEmail
         self.clock = clock
+    }
+
+    /// Test-only seam: directly sets the "Recent time entries" backing array and, optionally,
+    /// which of those entries is the one with a running timer — mirroring how `refresh()`
+    /// populates both from the API without going through `startTimer`'s day-matching logic.
+    func seedTimeslips(_ entries: [RatchetTimeslip], runningId: String? = nil) {
+        timeslips = entries
+        runningTimeslipId = runningId
     }
 
     static func seeded() -> FakeDataStore {

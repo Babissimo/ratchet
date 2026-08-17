@@ -11,6 +11,11 @@ public protocol DataStore: AnyObject {
     var accountEmail: String { get }
     var timeslips: [RatchetTimeslip] { get }
     var lastRefreshedAt: Date? { get }
+    /// The timeslip whose timer is currently running, if any; nil when nothing is. FreeAgent
+    /// doesn't live-update a running timeslip's `hours` — it only reflects hours as of the last
+    /// pause — so `MenuBuilder.buildRecentTimeEntriesSubmenu` excludes this entry rather than
+    /// showing a duration that's stale from the moment the timer was last resumed.
+    var currentRunningTimeslip: RatchetTimeslip? { get }
     /// The signed-in account's own FreeAgent web app URL, for "Open FreeAgent" — nil until
     /// known (e.g. before the first successful `refresh()`).
     var webAppURL: URL? { get }
