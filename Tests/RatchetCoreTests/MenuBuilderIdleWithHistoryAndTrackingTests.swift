@@ -103,7 +103,10 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         XCTAssertNotNil(clientItem?.submenu)
         let projectItem = clientItem?.submenu?.items.first { $0.title == "Website Redesign" }
         XCTAssertNotNil(projectItem?.submenu)
-        XCTAssertTrue(projectItem?.submenu?.items.contains { $0.title == "Development" } ?? false)
+        // The currently-tracked task (Development, per `sampleTask`) is excluded — switching to
+        // the task that's already running would just stop and immediately re-resume it.
+        XCTAssertFalse(projectItem?.submenu?.items.contains { $0.title == "Development" } ?? true)
+        XCTAssertTrue(projectItem?.submenu?.items.contains { $0.title == "Design" } ?? false)
         XCTAssertTrue(projectItem?.submenu?.items.contains { $0.title == "New task…" } ?? false)
     }
 
@@ -123,10 +126,16 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         let switchSubmenu = menu.items[2].submenu!
         let clientItem = switchSubmenu.items.first { $0.title == "Acme" }!
         let projectItem = clientItem.submenu!.items.first { $0.title == "Website Redesign" }!
-        let taskItem = projectItem.submenu!.items.first { $0.title == "Development" } as! ClosureMenuItem
+        // "Development" (the currently-tracked task, per `sampleTask`) is excluded from this
+        // submenu, so switch to the other task in the same project instead.
+        let taskItem = projectItem.submenu!.items.first { $0.title == "Design" } as! ClosureMenuItem
         _ = taskItem.target?.perform(taskItem.action, with: taskItem)
 
-        XCTAssertEqual(switchedTo, sampleTask)
+        XCTAssertEqual(switchedTo, TrackedTaskRef(
+            clientId: "client-1", clientName: "Acme",
+            projectId: "proj-1", projectName: "Website Redesign",
+            taskId: "task-2", taskName: "Design"
+        ))
     }
 
     func test_tracking_stopItemInvokesStopTracking() {

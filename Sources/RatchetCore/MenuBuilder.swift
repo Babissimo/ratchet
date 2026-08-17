@@ -75,7 +75,8 @@ public enum MenuBuilder {
         stopItem.image = menuIcon("stop.fill", "Stop tracking")
         menu.addItem(stopItem)
         let switchItem = NSMenuItem(title: "Switch task", action: nil, keyEquivalent: "")
-        switchItem.submenu = buildSwitchTaskSubmenu(dataStore: dataStore, actions: actions)
+        switchItem.image = menuIcon("arrow.triangle.2.circlepath", "Switch task")
+        switchItem.submenu = buildSwitchTaskSubmenu(dataStore: dataStore, actions: actions, currentTaskId: task.taskId)
         menu.addItem(switchItem)
         menu.addItem(.separator())
         let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
@@ -122,7 +123,9 @@ public enum MenuBuilder {
 
     /// "Switch task", reachable only from the tracking screen, is the same picker whose leaves
     /// stop the running timer and start tracking the picked (or newly created) task instead.
-    static func buildSwitchTaskSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
+    /// `currentTaskId` is excluded from the leaves — picking the task that's already running
+    /// would otherwise stop and immediately re-resume the same timer for no reason.
+    static func buildSwitchTaskSubmenu(dataStore: DataStore, actions: MenuActions, currentTaskId: String) -> NSMenu {
         taskPicker(dataStore: dataStore, actions: actions, leaves: TaskPickerLeaves(
             chooseTask: { client, project, task in
                 actions.switchTask(TrackedTaskRef(
@@ -131,7 +134,8 @@ public enum MenuBuilder {
                     taskId: task.id, taskName: task.name
                 ))
             },
-            chooseNewTask: { client, project in actions.switchToNewTask(client.id, project.id) }
+            chooseNewTask: { client, project in actions.switchToNewTask(client.id, project.id) },
+            excludingTaskId: currentTaskId
         ))
     }
 
@@ -145,6 +149,9 @@ public enum MenuBuilder {
     private struct TaskPickerLeaves {
         let chooseTask: (RatchetClient, RatchetProject, RatchetTask) -> Void
         let chooseNewTask: (RatchetClient, RatchetProject) -> Void
+        /// Omitted from the leaf task list — only "Switch task" sets this, to hide whichever
+        /// task is already running.
+        var excludingTaskId: String? = nil
     }
 
     /// Client → project → task, with an "add one" escape hatch at each level so a user who
@@ -186,10 +193,11 @@ public enum MenuBuilder {
     private static func taskPickerTasks(client: RatchetClient, project: RatchetProject, leaves: TaskPickerLeaves) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        if project.tasks.isEmpty {
+        let tasks = project.tasks.filter { $0.id != leaves.excludingTaskId }
+        if tasks.isEmpty {
             menu.addItem(disabledItem("No tasks"))
         }
-        for task in project.tasks {
+        for task in tasks {
             menu.addItem(ClosureMenuItem(title: task.name, handler: { leaves.chooseTask(client, project, task) }))
         }
         menu.addItem(.separator())

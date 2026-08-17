@@ -142,6 +142,12 @@ public final class StatusItemController {
                     // touches the timeslip it's given, so without this the previous task's
                     // timer would keep accruing hours alongside the new one.
                     _ = try await self.dataStore.stopTimer()
+                    // Reflect the stop in appState immediately, before attempting the new
+                    // start: if startTimer below throws (dropped network, deleted task), the
+                    // menu must show idle rather than keep "Stop tracking <old task>" with its
+                    // elapsed timer still counting up over a task that's already stopped
+                    // server-side.
+                    self.appState.stopTracking()
                     let timeslip = try await self.dataStore.startTimer(
                         taskId: task.taskId, projectId: task.projectId, clientId: task.clientId
                     )
@@ -590,6 +596,10 @@ public final class StatusItemController {
                     // See `switchTask`'s comment: stop the old timer server-side before
                     // starting the new one rather than trusting FreeAgent to retire it.
                     _ = try await self.dataStore.stopTimer()
+                    // Reflect the stop immediately, same as `switchTask` — if `startTimer`
+                    // below throws, the menu must show idle rather than keep the old task
+                    // displayed as tracking over a timer that's already stopped server-side.
+                    self.appState.stopTracking()
                 }
                 let timeslip = try await self.dataStore.startTimer(taskId: task.id, projectId: projectId, clientId: clientId)
                 let ref = TrackedTaskRef(
@@ -818,10 +828,20 @@ public final class StatusItemController {
 
         let controlWidth: CGFloat = 180
         let (taskPopup, assignments) = makeTaskAssignmentPopup(dataStore: dataStore, controlWidth: controlWidth)
-        if let currentIndex = assignments.firstIndex(where: {
+        let matchedIndex = assignments.firstIndex(where: {
             $0.clientId == entry.clientId && $0.projectId == entry.projectId && $0.taskId == entry.taskId
-        }) {
-            taskPopup.selectItem(at: currentIndex)
+        })
+        // When the entry's original task isn't in the current list (its project was archived
+        // since the last refresh, or this is an "unknown task" entry with an unresolved
+        // clientId), leaving the popup on AppKit's default first-item selection would silently
+        // reassign the entry to whatever task happens to be first in `dataStore.clients` order
+        // the moment the user clicks Save meaning only to fix the duration or comment. A
+        // placeholder that isn't a valid assignment forces an explicit choice instead.
+        if let matchedIndex {
+            taskPopup.selectItem(at: matchedIndex)
+        } else {
+            taskPopup.insertItem(withTitle: "Select the correct task…", at: 0)
+            taskPopup.selectItem(at: 0)
         }
 
         let logTimeFields = makeLogTimeFields(controlWidth: controlWidth)
@@ -854,15 +874,16 @@ public final class StatusItemController {
             presentValidationError("Enter a duration as hours:minutes, e.g. 1:30 (max 24:00).")
             return
         }
-        // Guarded by `liveValidate` above, so only reachable if `assignments` somehow emptied
-        // between the popup being built and Save being clicked (e.g. programmatic state change
-        // mid-modal) — the alert's already committed to closing, so fail loudly rather than
-        // silently keeping the entry's old task.
-        guard assignments.indices.contains(taskPopup.indexOfSelectedItem) else {
+        // When a placeholder was inserted (see above), its index offsets every real assignment
+        // by one; selecting it and clicking Save must fail the same way as `assignments`
+        // somehow emptying mid-modal — fail loudly rather than silently keeping (or guessing)
+        // the entry's task.
+        let selectedIndex = matchedIndex == nil ? taskPopup.indexOfSelectedItem - 1 : taskPopup.indexOfSelectedItem
+        guard assignments.indices.contains(selectedIndex) else {
             presentValidationError("Select a task.")
             return
         }
-        let assignment = assignments[taskPopup.indexOfSelectedItem]
+        let assignment = assignments[selectedIndex]
 
         Task { @MainActor in
             do {

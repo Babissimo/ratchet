@@ -204,6 +204,15 @@ final class FakeDataStore: DataStore {
               project.tasks.contains(where: { $0.id == taskId })
         else { throw DataStoreError.notFound }
 
+        // Mirrors FreeAgentDataStore.startTimer's conflict guard: a running timeslip for a
+        // *different* task means local/server state drifted (the menu never offers "Start" for
+        // a task other than the one already tracking), so this throws instead of implicitly
+        // switching — a fake that silently switched let a regression in the real guard sail
+        // through any test written against this one.
+        if let runningTimeslipId, let running = timeslips.first(where: { $0.id == runningTimeslipId }), running.taskId != taskId {
+            throw DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there.")
+        }
+
         // Deliberately mirrors FreeAgentDataStore.startTimer: resume today's existing timeslip for
         // this task instead of opening a second one, creating a slip only when none exists. A fake
         // that always appended made the resume path untestable — every "start, stop, start again"
@@ -222,8 +231,8 @@ final class FakeDataStore: DataStore {
             return timeslips[index]
         }
 
-        // Starting a new timer implicitly stops whichever one was running: `runningTimeslipId`
-        // is simply reassigned below, and the old entry keeps whatever hours it had accrued.
+        // Nothing was running (the guard above would have thrown or resumed otherwise), so this
+        // is a genuinely fresh start — `runningTimeslipId` is simply assigned below.
         let entry = RatchetTimeslip(
             id: "timeslip-\(UUID().uuidString.prefix(8))",
             clientId: clientId,

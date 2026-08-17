@@ -119,9 +119,16 @@ public final class FreeAgentDataStore: DataStore {
         if let running {
             if running.taskId == taskId {
                 // Already running for exactly the task being requested — resume it rather than
-                // starting (or creating) a second timeslip.
-                currentRunningTimeslip = running
-                return running
+                // starting (or creating) a second timeslip. Re-stamped with the caller's
+                // `clientId`, matching the two paths below, rather than whatever `running`
+                // already carried (from cache, or freshly resolved via `projectToClientId`) —
+                // keeps this path consistent with the others if the two ever disagree.
+                let resumed = RatchetTimeslip(
+                    id: running.id, clientId: clientId, projectId: running.projectId, taskId: running.taskId,
+                    date: running.date, hours: running.hours, comment: running.comment
+                )
+                currentRunningTimeslip = resumed
+                return resumed
             }
             // The menu only ever offers "Start tracking" from the idle screen — never alongside
             // an active .tracking screen — so a running timeslip for a *different* task here
@@ -129,7 +136,11 @@ public final class FreeAgentDataStore: DataStore {
             // web app, another device, or a stale cache), not a normal call path. The app has no
             // multi-timer support (see TODO.md), so surface this rather than silently stopping
             // someone else's/another device's timer out from under them.
-            throw DataStoreError.underlying("A timer is already running for another task — stop it first.")
+            // "Stop it first" has no menu route from the idle screen (only "Switch task", on the
+            // tracking screen, offers a stop) — pointing at Refresh gives the idle-screen user
+            // an actual next step: it re-adopts the drifted timer so it shows as tracking here,
+            // and only then does "Stop tracking" exist to act on it.
+            throw DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there.")
         }
 
         let today = todayString()
