@@ -10,7 +10,7 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
 
@@ -28,7 +28,7 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         let actions = MenuActions(
             logIn: { loggedIn = true }, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.build(state: AppState(), dataStore: FakeDataStore.seeded(), actions: actions)
 

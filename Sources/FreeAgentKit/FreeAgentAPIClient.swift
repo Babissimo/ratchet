@@ -116,6 +116,17 @@ public final class FreeAgentAPIClient {
         return try decodeEnveloped(data, envelopeKey: responseEnvelopeKey ?? envelopeKey)
     }
 
+    /// Same enveloping rules as `post` above (see its doc comment), but for endpoints that
+    /// update an existing resource in place rather than creating a new one — FreeAgent's
+    /// timeslip update is `PUT /timeslips/:id`, not a POST.
+    public func put<T: Decodable, Body: Encodable>(
+        _ path: String, envelopeKey: String, responseEnvelopeKey: String? = nil, query: [URLQueryItem] = [], body: Body
+    ) async throws -> T {
+        let bodyData = try jsonEncoder.encode([envelopeKey: body])
+        let data = try await authenticatedRequest(path: path, method: "PUT", query: query, body: bodyData)
+        return try decodeEnveloped(data, envelopeKey: responseEnvelopeKey ?? envelopeKey)
+    }
+
     public func delete(_ path: String) async throws {
         _ = try await authenticatedRequest(path: path, method: "DELETE", query: [], body: Data?.none)
     }

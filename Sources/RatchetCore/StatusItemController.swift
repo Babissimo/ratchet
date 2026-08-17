@@ -212,6 +212,9 @@ public final class StatusItemController {
         switchToNewTask: { [weak self] clientId, projectId in
             self?.presentAddTaskPrompt(clientId: clientId, projectId: projectId, switchingFromRunningTimer: true)
         },
+        editTimeEntry: { [weak self] entry in
+            self?.presentEditTimeEntryForm(entry: entry)
+        },
         quit: {
             NSApp.terminate(nil)
         }
@@ -768,6 +771,122 @@ public final class StatusItemController {
         formatter.timeStyle = .none
         return formatter
     }()
+
+    /// One flat entry per (client, project, task) triple, as "Client · Project · Task" — mirrors
+    /// `MenuBuilder.path(for:in:)`'s display string so the edit form's picker reads the same as
+    /// the row the user just clicked. A three-level cascading picker (matching "Start timer"/
+    /// "Log past time") would need live target-action wiring between three `NSPopUpButton`s that
+    /// nothing else in this file does; a single flat list keeps the same "reassign the task"
+    /// capability without introducing that machinery for one form.
+    private struct TaskAssignment {
+        let clientId: String
+        let projectId: String
+        let taskId: String
+    }
+
+    private func makeTaskAssignmentPopup(dataStore: DataStore, controlWidth: CGFloat) -> (popup: NSPopUpButton, assignments: [TaskAssignment]) {
+        var assignments: [TaskAssignment] = []
+        var titles: [String] = []
+        for client in dataStore.clients {
+            for project in client.projects {
+                for task in project.tasks {
+                    assignments.append(TaskAssignment(clientId: client.id, projectId: project.id, taskId: task.id))
+                    titles.append("\(client.name) · \(project.name) · \(task.name)")
+                }
+            }
+        }
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.translatesAutoresizingMaskIntoConstraints = false
+        popup.addItems(withTitles: titles)
+        popup.toolTip = "Which client, project, and task this time is booked against."
+        popup.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
+        return (popup, assignments)
+    }
+
+    private func presentEditTimeEntryForm(entry: RatchetTimeslip) {
+        DispatchQueue.main.async { [weak self] in
+            self?.runEditTimeEntryForm(entry: entry)
+        }
+    }
+
+    private func runEditTimeEntryForm(entry: RatchetTimeslip) {
+        let alert = NSAlert()
+        alert.icon = Self.formIcon
+        alert.messageText = "Edit Time Entry"
+        let saveButton = alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let controlWidth: CGFloat = 180
+        let (taskPopup, assignments) = makeTaskAssignmentPopup(dataStore: dataStore, controlWidth: controlWidth)
+        if let currentIndex = assignments.firstIndex(where: {
+            $0.clientId == entry.clientId && $0.projectId == entry.projectId && $0.taskId == entry.taskId
+        }) {
+            taskPopup.selectItem(at: currentIndex)
+        }
+
+        let logTimeFields = makeLogTimeFields(controlWidth: controlWidth)
+        let datePicker = logTimeFields.datePicker
+        let durationField = logTimeFields.durationField
+        let commentField = logTimeFields.commentField
+        datePicker.dateValue = entry.date
+        durationField.stringValue = DurationFormatter.hoursAndMinutes(entry.hours)
+        commentField.stringValue = entry.comment ?? ""
+
+        let rows: [NSView] = [labeledRow("Task *", taskPopup, required: true)] + logTimeFields.rows
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.spacing = 8
+        stack.alignment = .leading
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        alert.accessoryView = Self.frameBasedContainer(wrapping: stack)
+        alert.window.initialFirstResponder = durationField
+        let observers = liveValidate(button: saveButton, fields: [durationField]) {
+            guard !assignments.isEmpty else { return false }
+            return DurationFormatter.parseHoursAndMinutes(durationField.stringValue) != nil
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        endLiveValidate(observers)
+        guard response == .alertFirstButtonReturn else { return }
+
+        guard let hours = DurationFormatter.parseHoursAndMinutes(durationField.stringValue) else {
+            presentValidationError("Enter a duration as hours:minutes, e.g. 1:30 (max 24:00).")
+            return
+        }
+        // Guarded by `liveValidate` above, so only reachable if `assignments` somehow emptied
+        // between the popup being built and Save being clicked (e.g. programmatic state change
+        // mid-modal) — the alert's already committed to closing, so fail loudly rather than
+        // silently keeping the entry's old task.
+        guard assignments.indices.contains(taskPopup.indexOfSelectedItem) else {
+            presentValidationError("Select a task.")
+            return
+        }
+        let assignment = assignments[taskPopup.indexOfSelectedItem]
+
+        Task { @MainActor in
+            do {
+                _ = try await self.dataStore.updateTimeslip(
+                    id: entry.id,
+                    taskId: assignment.taskId,
+                    projectId: assignment.projectId,
+                    clientId: assignment.clientId,
+                    date: datePicker.dateValue,
+                    hours: hours,
+                    comment: TaskNameValidator.validate(commentField.stringValue)
+                )
+                self.rebuild()
+
+                let taskName = self.dataStore.clients.first(where: { $0.id == assignment.clientId })?
+                    .projects.first(where: { $0.id == assignment.projectId })?
+                    .tasks.first(where: { $0.id == assignment.taskId })?
+                    .name ?? "the task"
+                self.presentLoggedConfirmation(taskName: taskName, hours: hours, date: datePicker.dateValue)
+            } catch {
+                self.presentAPIError(error, action: "update the time entry")
+            }
+        }
+    }
 
     private func presentAddClientForm() {
         DispatchQueue.main.async { [weak self] in

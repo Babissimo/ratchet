@@ -24,9 +24,10 @@ final class FakeDataStore: DataStore {
 
     private let clock: () -> Date
 
-    init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
+    init(clients: [RatchetClient], accountEmail: String, timeslips: [RatchetTimeslip] = [], clock: @escaping () -> Date = Date.init) {
         self.clients = clients
         self.accountEmail = accountEmail
+        self.timeslips = timeslips
         self.clock = clock
     }
 
@@ -38,7 +39,7 @@ final class FakeDataStore: DataStore {
         runningTimeslipId = runningId
     }
 
-    static func seeded() -> FakeDataStore {
+    static func seeded(timeslips: [RatchetTimeslip] = []) -> FakeDataStore {
         let developmentTask = RatchetTask(id: "task-1", name: "Development")
         let designTask = RatchetTask(id: "task-2", name: "Design")
         let websiteProject = RatchetProject(id: "proj-1", name: "Website Redesign", tasks: [developmentTask, designTask])
@@ -46,7 +47,7 @@ final class FakeDataStore: DataStore {
         let retainerProject = RatchetProject(id: "proj-2", name: "Q3 Retainer", tasks: [copywritingTask])
         let acme = RatchetClient(id: "client-1", name: "Acme", projects: [websiteProject, retainerProject])
         let otherCo = RatchetClient(id: "client-2", name: "Other Co", projects: [])
-        return FakeDataStore(clients: [acme, otherCo], accountEmail: "al@example.com")
+        return FakeDataStore(clients: [acme, otherCo], accountEmail: "al@example.com", timeslips: timeslips)
     }
 
     func addTask(
@@ -167,6 +168,29 @@ final class FakeDataStore: DataStore {
         )
         timeslips.append(entry)
         return entry
+    }
+
+    func updateTimeslip(
+        id: String,
+        taskId: String,
+        projectId: String,
+        clientId: String,
+        date: Date,
+        hours: Double,
+        comment: String? = nil
+    ) async throws -> RatchetTimeslip {
+        guard let index = timeslips.firstIndex(where: { $0.id == id }) else { throw DataStoreError.notFound }
+        guard let client = clients.first(where: { $0.id == clientId }),
+              let project = client.projects.first(where: { $0.id == projectId }),
+              project.tasks.contains(where: { $0.id == taskId })
+        else { throw DataStoreError.notFound }
+
+        let updated = RatchetTimeslip(
+            id: id, clientId: clientId, projectId: projectId, taskId: taskId,
+            date: date, hours: hours, comment: comment
+        )
+        timeslips[index] = updated
+        return updated
     }
 
     func refresh() async throws {
