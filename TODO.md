@@ -12,37 +12,6 @@ that constraint; each item notes what it costs to skip signing.
 
 ## Free things that fix real problems now
 
-- [x] **Self-signed code signing certificate.** Created in Keychain Access
-  (Certificate Assistant → Create a Certificate → Code Signing, named
-  "Ratchet"). `scripts/build-app.sh` now signs every build with it
-  (`codesign --sign "Ratchet" --identifier com.ratchet.app`, falling back
-  to ad-hoc with a warning if the cert isn't present — e.g. a fresh
-  clone). Confirmed via `codesign -dv` that `Identifier` is now the
-  stable `com.ratchet.app` across rebuilds, instead of the ad-hoc
-  signature's per-build regenerated identifier. This was the actual
-  cause of a live-tested bug: **Launch at login didn't survive a
-  rebuild** — `sfltool dumpbtm` showed each `scripts/build-app.sh` run
-  registering a *new*, separate login item under the old ad-hoc
-  identifier rather than updating the existing one, so the toggle
-  silently reverted to off on next launch. Also still fixes the
-  original Keychain-access-reprompt-on-every-build annoyance this item
-  was first written for. Does **not** make other users trust the app
-  off this Mac (self-signed certs aren't recognized elsewhere) —
-  unrelated to and doesn't block notarization/distribution.
-
-- [x] **App icon.** `Resources/AppIcon.icns`, built from `RatchetIcon`
-  (`Sources/RatchetCore/RatchetIcon.swift`) via
-  `swift run IconExporter <output-dir>` + `iconutil`.
-  `scripts/build-app.sh` regenerates it into `.build/icons` on every run,
-  bundles that, sets `CFBundleIconFile`/`CFBundleIconName`, and warns when the
-  committed copy has gone stale. Also covers the Homebrew Cask
-  listing concern this item originally raised. Menu bar and dialogs use
-  the same drawing code (`RatchetIcon.mark` / `.appTile`) instead of the
-  old SF Symbol `clock` — `.appTile` (Dock/dialog/FreeAgent-listing icon,
-  `design/icons/freeagent-icon.png`) has a textured gradient/grain/engraved
-  treatment; `.mark` (tray glyph) stays flat, per platform convention for
-  status-bar icons.
-
 - [ ] **Switch OAuth to PKCE, stop embedding the client secret — tried,
   reverted.** Implemented RFC 7636 PKCE (`code_verifier`/`code_challenge`
   on the authorize URL, no `Authorization: Basic`) and live-tested it
@@ -76,10 +45,47 @@ that constraint; each item notes what it costs to skip signing.
   (once the repo is public — see below). Nothing else code-side is
   needed.
 
+- [x] **Self-signed code signing certificate.** Created in Keychain Access
+  (Certificate Assistant → Create a Certificate → Code Signing, named
+  "Ratchet"). `scripts/build-app.sh` now signs every build with it
+  (`codesign --sign "Ratchet" --identifier com.ratchet.app`, falling back
+  to ad-hoc with a warning if the cert isn't present — e.g. a fresh
+  clone). Confirmed via `codesign -dv` that `Identifier` is now the
+  stable `com.ratchet.app` across rebuilds, instead of the ad-hoc
+  signature's per-build regenerated identifier. This was the actual
+  cause of a live-tested bug: **Launch at login didn't survive a
+  rebuild** — `sfltool dumpbtm` showed each `scripts/build-app.sh` run
+  registering a *new*, separate login item under the old ad-hoc
+  identifier rather than updating the existing one, so the toggle
+  silently reverted to off on next launch. Also still fixes the
+  original Keychain-access-reprompt-on-every-build annoyance this item
+  was first written for. Does **not** make other users trust the app
+  off this Mac (self-signed certs aren't recognized elsewhere) —
+  unrelated to and doesn't block notarization/distribution.
+
+- [x] **App icon.** `Resources/AppIcon.icns`, built from `RatchetIcon`
+  (`Sources/RatchetCore/RatchetIcon.swift`) via
+  `swift run IconExporter <output-dir>` + `iconutil`.
+  `scripts/build-app.sh` regenerates it into `.build/icons` on every run,
+  bundles that, sets `CFBundleIconFile`/`CFBundleIconName`, and warns when the
+  committed copy has gone stale. Also covers the Homebrew Cask
+  listing concern this item originally raised. Menu bar and dialogs use
+  the same drawing code (`RatchetIcon.mark` / `.appTile`) instead of the
+  old SF Symbol `clock` — `.appTile` (Dock/dialog/FreeAgent-listing icon,
+  `design/icons/freeagent-icon.png`) has a textured gradient/grain/engraved
+  treatment; `.mark` (tray glyph) stays flat, per platform convention for
+  status-bar icons.
+
 ## Distribution without notarization
 
 - [ ] **Public GitHub repo.** Needed as the home for release artifacts and
   the Homebrew tap. Free for public repos.
+
+- [ ] **Own Homebrew tap, not the official `homebrew-cask` repo.** The
+  official repo's quality guidelines likely require signing/notarization
+  for acceptance. A personal tap (`brew tap <you>/ratchet`) has no such
+  gate — `Casks/ratchet.rb` is drafted and ready to host there, with
+  placeholder `version`/`sha256`/`url` to fill in once a release exists.
 
 - [x]/[ ] **GitHub Actions release workflow.** `.github/workflows/release.yml`
   drafted: tag push (`v*`) → `swift build -c release` →
@@ -94,14 +100,16 @@ that constraint; each item notes what it costs to skip signing.
     flagged in-file as unverified until there's a real release artifact
     to test `xattr` against.
 
-- [ ] **Own Homebrew tap, not the official `homebrew-cask` repo.** The
-  official repo's quality guidelines likely require signing/notarization
-  for acceptance. A personal tap (`brew tap <you>/ratchet`) has no such
-  gate — `Casks/ratchet.rb` is drafted and ready to host there, with
-  placeholder `version`/`sha256`/`url` to fill in once a release exists.
-
 ## Feature backlog
 
+- [ ] **Contact integrationsrequests@freeagent.com to make it official.**
+  Pursue listing/partnership status for the app.
+- [ ] **Offline/intermittent connection support** — start tracking while
+  offline, sync to FreeAgent automatically once back online.
+- [ ] **Support multiple simultaneous timers**, matching the FreeAgent web
+  app. `AppState`/`FreeAgentDataStore` currently model a single
+  `currentRunningTimeslip`/`trackingTask` — this would be a real data-model
+  change, not just a UI one.
 - [x]/[ ] **Explore how a timer ought to and does work across days.**
   Researched: FreeAgent's docs are silent on multi-day running timers, but
   the schema (`dated_on` a single scalar day, no splitting) implies the
@@ -117,8 +125,6 @@ that constraint; each item notes what it costs to skip signing.
   recommended but not built — no auto-splitting, which is the wrong
   altitude for a background menu-bar app per the research's own
   reasoning.
-- [ ] **Contact integrationsrequests@freeagent.com to make it official.**
-  Pursue listing/partnership status for the app.
 - [x] **Icons next to some menu buttons**, beyond the current
   `RatchetIcon.mark`/`.appTile` usage. SF Symbol icons (`menuIcon` helper
   in `MenuBuilder.swift`) added to the highest-traffic rows — start/stop,
@@ -133,12 +139,6 @@ that constraint; each item notes what it costs to skip signing.
   than stopping and starting a new timer — keeps it one continuous
   timeslip and the elapsed-time counter running from its original start
   instant. The submenu excludes whichever task is already tracking.
-- [ ] **Offline/intermittent connection support** — start tracking while
-  offline, sync to FreeAgent automatically once back online.
-- [ ] **Support multiple simultaneous timers**, matching the FreeAgent web
-  app. `AppState`/`FreeAgentDataStore` currently model a single
-  `currentRunningTimeslip`/`trackingTask` — this would be a real data-model
-  change, not just a UI one.
 - [x] **Make "Recent time entries" editable** — clicking an entry opens a
   form (task via three cascading Client/Project/Task popups, plus
   date/duration/comment) that `PUT`s the full record via a new
