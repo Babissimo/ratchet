@@ -35,6 +35,7 @@ public final class StatusItemController {
     private weak var elapsedMenuItem: NSMenuItem?
     private var isLoggingIn = false
     private var isChangingLaunchAtLogin = false
+    private let now: () -> Date
     private var appearanceObservation: NSKeyValueObservation?
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
@@ -49,7 +50,8 @@ public final class StatusItemController {
         statusBar: NSStatusBar = .system,
         performLogin: @escaping LoginHandler = {},
         restoreRunningTimer: @escaping RestoreRunningTimerHandler = {},
-        setLaunchAtLogin: @escaping SetLaunchAtLoginHandler = { _ in false }
+        setLaunchAtLogin: @escaping SetLaunchAtLoginHandler = { _ in false },
+        now: @escaping () -> Date = Date.init
     ) {
         self.appState = appState
         self.dataStore = dataStore
@@ -57,6 +59,7 @@ public final class StatusItemController {
         self.performLogin = performLogin
         self.restoreRunningTimer = restoreRunningTimer
         self.setLaunchAtLogin = setLaunchAtLogin
+        self.now = now
         appState.onChange = { [weak self] in self?.rebuild() }
         rebuild()
 
@@ -323,6 +326,7 @@ public final class StatusItemController {
 
     private func rebuild() {
         let menu = MenuBuilder.build(state: appState, dataStore: dataStore, actions: actions)
+        menu.delegate = menuOpenDelegate
         statusItem.menu = menu
         if case .tracking = appState.screen {
             // Index 0 is the disabled elapsed-time line built by MenuBuilder.buildTracking.
@@ -332,6 +336,61 @@ public final class StatusItemController {
         }
         updateIcon()
         updateTimer()
+    }
+
+    /// `NSMenu.delegate` is an Objective-C protocol, so forwarding `menuWillOpen` needs an
+    /// `NSObject`-rooted type — `StatusItemController` itself stays a plain Swift class rather
+    /// than picking up `NSObject` for this alone. `NSMenu.delegate` is unowned, so this must be
+    /// held strongly somewhere for the menu's lifetime; `rebuild()` assigns it to every freshly
+    /// built menu.
+    private final class MenuOpenDelegate: NSObject, NSMenuDelegate {
+        private let onOpen: () -> Void
+
+        init(onOpen: @escaping () -> Void) {
+            self.onOpen = onOpen
+        }
+
+        func menuWillOpen(_ menu: NSMenu) {
+            onOpen()
+        }
+    }
+
+    private lazy var menuOpenDelegate = MenuOpenDelegate { [weak self] in
+        self?.silentlyRefreshIfStale()
+    }
+
+    /// Two minutes: long enough that opening the menu twice in quick succession, or a rapid
+    /// sleep/wake, doesn't fire a second network round-trip; short enough that data is never
+    /// stale for long while the app is actually being used.
+    private static let staleRefreshThreshold: TimeInterval = 120
+
+    /// Shared by the menu-open and system-wake triggers. Skips the network round-trip entirely
+    /// if `dataStore` was already refreshed within `staleRefreshThreshold`. Never blocks the
+    /// caller — the menu (or whatever triggered this) is already visible/handled by the time
+    /// this returns; a successful refresh's `rebuild()` just makes the *next* open reflect fresh
+    /// data. The manual "Refresh projects & tasks" item bypasses this entirely by calling
+    /// `dataStore.refresh()` directly, so it's never subject to this gate.
+    private func silentlyRefreshIfStale() {
+        if let lastRefreshedAt = dataStore.lastRefreshedAt,
+           now().timeIntervalSince(lastRefreshedAt) < Self.staleRefreshThreshold {
+            return
+        }
+        Task { @MainActor in
+            do {
+                try await self.dataStore.refresh()
+                // Same adoption the manual refresh and launch/login paths do — without this, a
+                // timer started or stopped elsewhere wouldn't show up even after this silent
+                // refresh succeeds.
+                self.restoreRunningTimer()
+                self.rebuild()
+            } catch where error.indicatesSessionExpired {
+                self.handleSessionExpired()
+            } catch {
+                // A background refresh failing (e.g. no network) isn't worth interrupting the
+                // user over — same reasoning as AppDelegate's launch-time refresh. The next
+                // menu open or wake just tries again.
+            }
+        }
     }
 
     /// The tray glyph's point size. NSStatusItem draws button images at roughly this size
