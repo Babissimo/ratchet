@@ -16,7 +16,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
 
@@ -43,7 +43,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()
@@ -84,7 +84,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: { stopped = true },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()

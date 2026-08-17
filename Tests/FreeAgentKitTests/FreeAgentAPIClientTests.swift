@@ -184,6 +184,24 @@ final class FreeAgentAPIClientTests: XCTestCase {
         store.clear()
     }
 
+    func test_put_sendsPUTAndWrapsBodyInEnvelopeKey() async throws {
+        struct UpdateBody: Encodable { let name: String }
+        struct Updated: Decodable, Equatable { let name: String }
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"thing":{"name":"renamed"}}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        let result = try await client.put("things/1", envelopeKey: "thing", body: UpdateBody(name: "renamed")) as Updated
+
+        XCTAssertEqual(result, Updated(name: "renamed"))
+        XCTAssertEqual(transport.calls[0].request.httpMethod, "PUT")
+        let sentBody = transport.calls[0].request.httpBody!
+        let json = try JSONSerialization.jsonObject(with: sentBody) as! [String: Any]
+        XCTAssertNotNil(json["thing"])
+        store.clear()
+    }
+
     func test_get_withEnvelopeKey_unwrapsSingleResourceResponse() async throws {
         struct User: Decodable, Equatable { let email: String }
         let transport = StubTransport()

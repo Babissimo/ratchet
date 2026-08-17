@@ -10,7 +10,7 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
 
@@ -66,7 +66,7 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
             refresh: { refreshed = true }, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
         let refreshItem = menu.items[1] as! ClosureMenuItem
@@ -79,7 +79,7 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         let actions = MenuActions(
             logIn: {}, logOut: { loggedOut = true }, startTracking: { _ in }, stopTracking: {},
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
         let logOutItem = menu.items[6] as! ClosureMenuItem

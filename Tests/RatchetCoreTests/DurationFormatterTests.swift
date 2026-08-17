@@ -44,4 +44,20 @@ final class DurationFormatterTests: XCTestCase {
         XCTAssertNil(DurationFormatter.parseHoursAndMinutes("24:01"))
         XCTAssertNil(DurationFormatter.parseHoursAndMinutes("25:00"))
     }
+
+    func test_hoursAndMinutes_formatsWholeHours() {
+        XCTAssertEqual(DurationFormatter.hoursAndMinutes(2.0), "2:00")
+    }
+
+    func test_hoursAndMinutes_formatsFractionalHours() {
+        XCTAssertEqual(DurationFormatter.hoursAndMinutes(1.5), "1:30")
+        XCTAssertEqual(DurationFormatter.hoursAndMinutes(0.25), "0:15")
+    }
+
+    func test_hoursAndMinutes_roundTripsThroughParse() {
+        for text in ["1:30", "0:15", "2:00", "24:00", "12:45"] {
+            let parsed = DurationFormatter.parseHoursAndMinutes(text)!
+            XCTAssertEqual(DurationFormatter.hoursAndMinutes(parsed), text)
+        }
+    }
 }

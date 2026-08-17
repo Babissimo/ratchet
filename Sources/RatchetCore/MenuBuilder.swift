@@ -44,7 +44,7 @@ public enum MenuBuilder {
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(logPastTimeItem)
         let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
-        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
+        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
@@ -71,7 +71,7 @@ public enum MenuBuilder {
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(logPastTimeItem)
         let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
-        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
+        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
@@ -168,7 +168,7 @@ public enum MenuBuilder {
         return menu
     }
 
-    static func buildRecentTimeEntriesSubmenu(dataStore: DataStore) -> NSMenu {
+    static func buildRecentTimeEntriesSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         // Sorted here rather than trusting the store's array order. That order comes from
@@ -184,7 +184,9 @@ public enum MenuBuilder {
             let path = path(for: entry, in: dataStore)
             let duration = ElapsedTimeFormatter.format(seconds: entry.hours * 3600)
             let dateText = CalendarDay.displayString(from: entry.date)
-            menu.addItem(disabledItem("\(path) · \(duration) · \(dateText)"))
+            // Clickable rather than `disabledItem`: this is the only route to correcting a
+            // mis-logged entry short of leaving the app and editing it in FreeAgent's web UI.
+            menu.addItem(ClosureMenuItem(title: "\(path) · \(duration) · \(dateText)", handler: { actions.editTimeEntry(entry) }))
         }
         return menu
     }

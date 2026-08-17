@@ -11,6 +11,11 @@ public struct MenuActions {
     public let addProject: (_ clientId: String) -> Void
     public let logPastTime: (_ clientId: String, _ projectId: String, _ taskId: String) -> Void
     public let logPastTimeForNewTask: (_ clientId: String, _ projectId: String) -> Void
+    /// Clicking a row in "Recent time entries" — opens whatever form lets its hours/task/comment
+    /// be changed. Takes the full `RatchetTimeslip` rather than just an id: the menu already has
+    /// the entry in hand from building the list, and the id alone isn't enough to prefill a form
+    /// without a second lookup back into `dataStore.timeslips`.
+    public let editTimeEntry: (RatchetTimeslip) -> Void
     public let quit: () -> Void
 
     public init(
@@ -26,6 +31,7 @@ public struct MenuActions {
         addProject: @escaping (_ clientId: String) -> Void,
         logPastTime: @escaping (_ clientId: String, _ projectId: String, _ taskId: String) -> Void,
         logPastTimeForNewTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
+        editTimeEntry: @escaping (RatchetTimeslip) -> Void,
         quit: @escaping () -> Void
     ) {
         self.logIn = logIn
@@ -40,6 +46,7 @@ public struct MenuActions {
         self.addProject = addProject
         self.logPastTime = logPastTime
         self.logPastTimeForNewTask = logPastTimeForNewTask
+        self.editTimeEntry = editTimeEntry
         self.quit = quit
     }
 }

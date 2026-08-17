@@ -303,6 +303,37 @@ public final class FreeAgentDataStore: DataStore {
         return resolved
     }
 
+    public func updateTimeslip(
+        id: String, taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
+    ) async throws -> RatchetTimeslip {
+        // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
+        // record, not a partial patch, so reassigning the task means resending project/task too.
+        struct UpdateTimeslipBody: Encodable {
+            let project: String
+            let task: String
+            let user: String
+            let dated_on: String
+            let hours: String
+            let comment: String?
+        }
+        let updated: FreeAgentTimeslipDTO = try await apiClient.put(
+            id, envelopeKey: "timeslip",
+            body: UpdateTimeslipBody(
+                project: projectId, task: taskId, user: currentUserURL,
+                dated_on: dateString(date), hours: String(hours), comment: comment
+            )
+        )
+        let resolved = resolvedTimeslip(updated, clientId: clientId)
+        // Replaced in place if still cached, rather than assuming it must be — an edit from a
+        // stale menu (built before the entry aged out of the `refresh()` window, or from a
+        // duplicate submenu still open after the underlying array changed) shouldn't silently
+        // reinsert a slip the local cache had already dropped.
+        if let index = timeslips.firstIndex(where: { $0.id == id }) {
+            timeslips[index] = resolved
+        }
+        return resolved
+    }
+
     // MARK: - Private helpers
 
     private func resolvedTimeslip(_ dto: FreeAgentTimeslipDTO, clientId: String? = nil) -> RatchetTimeslip {

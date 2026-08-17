@@ -165,6 +165,49 @@ final class FreeAgentDataStoreTests: XCTestCase {
         tokenStore.clear()
     }
 
+    func test_updateTimeslip_putsTheFullRecordAndReplacesTheCachedEntry() async throws {
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/42","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-10","hours":"1.0","comment":null,"timer":null}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        XCTAssertEqual(store.timeslips.count, 1)
+
+        transport.responsesByPathSubstring.insert(
+            (match: "/timeslips/42", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/42","project":"https://api.sandbox.freeagent.com/v2/projects/2","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"2.5","comment":"Reassigned","timer":null}}"#.utf8)),
+            at: 0
+        )
+
+        let updated = try await store.updateTimeslip(
+            id: "https://api.sandbox.freeagent.com/v2/timeslips/42",
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/2",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/2",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/2",
+            date: CalendarDay.day(from: "2026-08-11")!,
+            hours: 2.5,
+            comment: "Reassigned"
+        )
+
+        XCTAssertEqual(updated.taskId, "https://api.sandbox.freeagent.com/v2/tasks/2")
+        XCTAssertEqual(updated.hours, 2.5)
+        XCTAssertEqual(updated.comment, "Reassigned")
+        // Replaced in the local cache, not appended alongside the stale entry.
+        XCTAssertEqual(store.timeslips.count, 1)
+        XCTAssertEqual(store.timeslips[0], updated)
+
+        let putCall = transport.calls.last!
+        XCTAssertEqual(putCall.httpMethod, "PUT")
+        XCTAssertTrue(putCall.url!.absoluteString.contains("/timeslips/42"))
+        tokenStore.clear()
+    }
+
     func test_stopTimer_queriesServerAndReturnsNilWhenCacheIsEmptyAndNothingIsRunning() async throws {
         // No `refresh()` here, so `currentRunningTimeslip` starts nil — the case the
         // server-fallback in `stopTimer()` exists for (see its doc comment): an empty cache
