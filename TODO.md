@@ -102,26 +102,50 @@ that constraint; each item notes what it costs to skip signing.
 
 ## Feature backlog
 
-- [ ] **Explore how a timer ought to and does work across days.** What
-  FreeAgent actually does with a timeslip that's still running when the
-  calendar day rolls over, and what Ratchet should do to match (or
-  intentionally diverge).
+- [x]/[ ] **Explore how a timer ought to and does work across days.**
+  Researched: FreeAgent's docs are silent on multi-day running timers, but
+  the schema (`dated_on` a single scalar day, no splitting) implies the
+  whole duration books to the start day — not server-confirmed, just the
+  strong inference. The research surfaced a real, separate bug rather than
+  just an ambiguity: `FreeAgentDataStore.startTimer`'s existing-timeslip
+  lookup was scoped to *today*, so a timer left running past midnight and
+  then re-started (app restart, etc.) would silently create a duplicate
+  timeslip rather than resuming the original — fixed, `startTimer` now
+  checks for any currently-running timeslip first regardless of day.
+  Remaining, not done: a lightweight "running since yesterday" indicator
+  in the menu (cheap, `CalendarDay` already in the codebase) was
+  recommended but not built — no auto-splitting, which is the wrong
+  altitude for a background menu-bar app per the research's own
+  reasoning.
 - [ ] **Contact integrationsrequests@freeagent.com to make it official.**
   Pursue listing/partnership status for the app.
-- [ ] **Icons next to some menu buttons**, beyond the current
-  `RatchetIcon.mark`/`.appTile` usage.
-- [ ] **Submenu of tasks to switch what's being tracked while a timer is
-  active** — currently switching tasks mid-timer isn't a first-class
-  menu action.
+- [x] **Icons next to some menu buttons**, beyond the current
+  `RatchetIcon.mark`/`.appTile` usage. SF Symbol icons (`menuIcon` helper
+  in `MenuBuilder.swift`) added to the highest-traffic rows — start/stop,
+  switch task, log past time, recent entries, settings, log in, refresh,
+  log out, account email. Deliberately left plain: Quit (macOS
+  convention), Launch at login (already shows state via its checkmark),
+  Open FreeAgent, and every leaf of the client→project→task pickers.
+- [x] **Submenu of tasks to switch what's being tracked while a timer is
+  active.** "Switch task" reuses the same client→project→task picker as
+  Start timer/Log past time. Reassigns the *running* timeslip's task in
+  place (a `PUT` on task/project/client, same date/hours/comment) rather
+  than stopping and starting a new timer — keeps it one continuous
+  timeslip and the elapsed-time counter running from its original start
+  instant. The submenu excludes whichever task is already tracking.
 - [ ] **Offline/intermittent connection support** — start tracking while
   offline, sync to FreeAgent automatically once back online.
 - [ ] **Support multiple simultaneous timers**, matching the FreeAgent web
   app. `AppState`/`FreeAgentDataStore` currently model a single
   `currentRunningTimeslip`/`trackingTask` — this would be a real data-model
   change, not just a UI one.
-- [ ] **Make "Recent time entries" editable** — clicking an entry in the
-  menu should let its logged hours/task/comment be updated, not just
-  viewed.
+- [x] **Make "Recent time entries" editable** — clicking an entry opens a
+  form (task via three cascading Client/Project/Task popups, plus
+  date/duration/comment) that `PUT`s the full record via a new
+  `DataStore.updateTimeslip`. The currently-running entry is excluded
+  from the list outright (FreeAgent doesn't live-update a running
+  timeslip's `hours`, so it would otherwise show a stale, paused-at
+  duration).
 
 ## Not blocking, revisit later
 
