@@ -20,7 +20,7 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
 
         XCTAssertEqual(menu.items.map(\.title), ["Log in with browser", "", "Quit"])
         XCTAssertTrue(menu.items[1].isSeparatorItem)
-        XCTAssertNotNil(menu.items[0].image)
+        XCTAssertNil(menu.items[0].image)
     }
 
     func test_loggedOut_logInItemInvokesLogInAction() {
@@ -49,12 +49,12 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         XCTAssertNotNil(menu.items[2].submenu)
         XCTAssertNotNil(menu.items[3].submenu)
         XCTAssertNotNil(menu.items[5].submenu)
-        // The four high-traffic rows carry an SF Symbol; "Quit" deliberately doesn't (see
-        // MenuBuilder.menuIcon's doc comment on not decorating every row).
-        XCTAssertNotNil(menu.items[0].image)
-        XCTAssertNotNil(menu.items[2].image)
-        XCTAssertNotNil(menu.items[3].image)
-        XCTAssertNotNil(menu.items[5].image)
+        // Icons are reserved for Start/Stop tracking; there's no running or most-recent task
+        // here, so nothing in this menu carries one (see MenuBuilder.menuIcon's doc comment).
+        XCTAssertNil(menu.items[0].image)
+        XCTAssertNil(menu.items[2].image)
+        XCTAssertNil(menu.items[3].image)
+        XCTAssertNil(menu.items[5].image)
         XCTAssertNil(menu.items[6].image)
     }
 }

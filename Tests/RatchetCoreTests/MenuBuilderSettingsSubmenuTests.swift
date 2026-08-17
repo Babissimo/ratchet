@@ -30,12 +30,13 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[3].isSeparatorItem)
         XCTAssertTrue(menu.items[5].isSeparatorItem)
-        // Account row, refresh, and log out carry an icon; the toggle and "Open FreeAgent" don't.
-        XCTAssertNotNil(menu.items[0].image)
-        XCTAssertNotNil(menu.items[1].image)
+        // Icons are reserved for Start/Stop tracking on the main menu; nothing in Settings
+        // carries one.
+        XCTAssertNil(menu.items[0].image)
+        XCTAssertNil(menu.items[1].image)
         XCTAssertNil(menu.items[2].image)
         XCTAssertNil(menu.items[4].image)
-        XCTAssertNotNil(menu.items[6].image)
+        XCTAssertNil(menu.items[6].image)
     }
 
     func test_refreshItem_showsNeverRefreshedByDefault() {

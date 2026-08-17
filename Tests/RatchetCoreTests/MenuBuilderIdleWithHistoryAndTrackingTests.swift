@@ -83,9 +83,9 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         XCTAssertTrue(menu.items[6].isSeparatorItem)
         XCTAssertEqual(menu.items[7].title, "Settings")
         XCTAssertEqual(menu.items[8].title, "Quit")
-        XCTAssertNotNil(menu.items[4].image) // log past time
-        XCTAssertNotNil(menu.items[5].image) // recent time entries
-        XCTAssertNotNil(menu.items[7].image) // settings
+        XCTAssertNil(menu.items[4].image) // log past time stays unadorned
+        XCTAssertNil(menu.items[5].image) // recent time entries stays unadorned
+        XCTAssertNil(menu.items[7].image) // settings stays unadorned
         XCTAssertNil(menu.items[8].image) // quit stays unadorned
     }
 
