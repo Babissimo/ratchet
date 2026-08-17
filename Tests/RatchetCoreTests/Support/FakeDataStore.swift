@@ -6,6 +6,9 @@ final class FakeDataStore: DataStore {
     private(set) var clients: [RatchetClient]
     let accountEmail: String
     private(set) var refreshCount = 0
+    /// Set by tests to make the next `refresh()` call throw instead of succeeding, simulating a
+    /// network failure or a dead session (via `FakeSessionExpiredError`).
+    var refreshError: Error?
     private(set) var timeslips: [RatchetTimeslip] = []
     private(set) var lastRefreshedAt: Date?
     let webAppURL: URL? = URL(string: "https://app.freeagent.com")
@@ -194,6 +197,9 @@ final class FakeDataStore: DataStore {
     }
 
     func refresh() async throws {
+        if let refreshError {
+            throw refreshError
+        }
         refreshCount += 1
         lastRefreshedAt = clock()
     }
