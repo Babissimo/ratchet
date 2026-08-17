@@ -175,7 +175,14 @@ public enum MenuBuilder {
         // whatever sequence FreeAgent's pagination happened to return, and `logTime` appends
         // locally — so a back-dated entry logged just now would otherwise sort as the newest
         // thing in the list until the next refresh reshuffled it.
-        let recent = dataStore.timeslips.sorted { $0.date > $1.date }.prefix(20)
+        // Excludes the running entry, not just re-labels it: FreeAgent doesn't live-update a
+        // running timeslip's `hours`, so whatever's on record is stale from the last pause and
+        // it isn't finally logged yet anyway. Filtered before the prefix(20) truncation so
+        // dropping it can reveal a 21st entry rather than shortening the visible list.
+        let recent = dataStore.timeslips
+            .filter { $0.id != dataStore.currentRunningTimeslip?.id }
+            .sorted { $0.date > $1.date }
+            .prefix(20)
         if recent.isEmpty {
             menu.addItem(disabledItem("No time logged yet"))
             return menu
