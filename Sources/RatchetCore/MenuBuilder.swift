@@ -18,7 +18,9 @@ public enum MenuBuilder {
     private static func buildLoggedOut(actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(ClosureMenuItem(title: "Log in with browser", handler: actions.logIn))
+        let logInItem = ClosureMenuItem(title: "Log in with browser", handler: actions.logIn)
+        logInItem.image = menuIcon("safari", "Log in with browser")
+        menu.addItem(logInItem)
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
         return menu
@@ -34,20 +36,25 @@ public enum MenuBuilder {
                 firstLine: title,
                 secondLine: "\(mostRecent.clientName) · \(mostRecent.projectName)"
             )
+            item.image = menuIcon("play.fill", "Start tracking")
             menu.addItem(item)
         }
         let startItem = NSMenuItem(title: "Start timer", action: nil, keyEquivalent: "")
+        startItem.image = menuIcon("play.fill", "Start timer")
         startItem.submenu = buildStartSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(startItem)
         menu.addItem(.separator())
         let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
+        logPastTimeItem.image = menuIcon("clock.arrow.circlepath", "Log past time")
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(logPastTimeItem)
         let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
+        recentItem.image = menuIcon("list.bullet.clipboard", "Recent time entries")
         recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
         menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settingsItem.image = menuIcon("gearshape", "Settings")
         settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
         menu.addItem(settingsItem)
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
@@ -65,16 +72,20 @@ public enum MenuBuilder {
             firstLine: stopTitle,
             secondLine: "\(task.clientName) · \(task.projectName)"
         )
+        stopItem.image = menuIcon("stop.fill", "Stop tracking")
         menu.addItem(stopItem)
         menu.addItem(.separator())
         let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
+        logPastTimeItem.image = menuIcon("clock.arrow.circlepath", "Log past time")
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(logPastTimeItem)
         let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
+        recentItem.image = menuIcon("list.bullet.clipboard", "Recent time entries")
         recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
         menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settingsItem.image = menuIcon("gearshape", "Settings")
         settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
         menu.addItem(settingsItem)
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
@@ -199,13 +210,16 @@ public enum MenuBuilder {
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(disabledItem(dataStore.accountEmail))
+        let accountItem = disabledItem(dataStore.accountEmail)
+        accountItem.image = menuIcon("person.crop.circle", "Account")
+        menu.addItem(accountItem)
         let refreshTitle = "Refresh projects & tasks"
         let refreshItem = ClosureMenuItem(title: refreshTitle, handler: actions.refresh)
         refreshItem.attributedTitle = twoLineAttributedTitle(
             firstLine: refreshTitle,
             secondLine: lastRefreshedSubtitle(dataStore.lastRefreshedAt)
         )
+        refreshItem.image = menuIcon("arrow.clockwise", "Refresh")
         menu.addItem(refreshItem)
         let launchItem = ClosureMenuItem(title: "Launch at login", handler: actions.toggleLaunchAtLogin)
         launchItem.state = state.launchAtLoginEnabled ? .on : .off
@@ -213,7 +227,9 @@ public enum MenuBuilder {
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Open FreeAgent", handler: actions.openFreeAgent))
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Log out", handler: actions.logOut))
+        let logOutItem = ClosureMenuItem(title: "Log out", handler: actions.logOut)
+        logOutItem.image = menuIcon("rectangle.portrait.and.arrow.right", "Log out")
+        menu.addItem(logOutItem)
         return menu
     }
 
@@ -221,6 +237,17 @@ public enum MenuBuilder {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
+    }
+
+    /// An SF Symbol sized for a menu row, marked as a template image so AppKit recolors it to
+    /// match the menu's current appearance (regular black glyph in light mode, white in dark
+    /// mode, blue when the row is highlighted) instead of rendering the symbol's own flat color.
+    /// Only applied to the handful of highest-traffic rows — see MenuBuilder's call sites — since
+    /// icon on every row would read as noise rather than a wayfinding aid.
+    private static func menuIcon(_ symbolName: String, _ accessibilityDescription: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)
+        image?.isTemplate = true
+        return image
     }
 
     /// Two-line title (e.g. "Start tracking X" over "Client · Project", or

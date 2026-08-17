@@ -36,6 +36,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         // separate menu item — the plain .title is the fallback string, the two-line
         // rendering lives in .attributedTitle.
         XCTAssertEqual(menu.items[0].attributedTitle?.string, "Start tracking Development\nAcme · Website Redesign")
+        XCTAssertNotNil(menu.items[0].image)
     }
 
     func test_idleWithHistory_topItemStartsTrackingTheMostRecentTask() {
@@ -77,6 +78,11 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         XCTAssertTrue(menu.items[5].isSeparatorItem)
         XCTAssertEqual(menu.items[6].title, "Settings")
         XCTAssertEqual(menu.items[7].title, "Quit")
+        XCTAssertNotNil(menu.items[1].image) // stop tracking
+        XCTAssertNotNil(menu.items[3].image) // log past time
+        XCTAssertNotNil(menu.items[4].image) // recent time entries
+        XCTAssertNotNil(menu.items[6].image) // settings
+        XCTAssertNil(menu.items[7].image) // quit stays unadorned
     }
 
     func test_tracking_stopItemInvokesStopTracking() {
