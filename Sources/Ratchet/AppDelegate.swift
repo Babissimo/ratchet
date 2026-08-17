@@ -2,6 +2,7 @@
 import AppKit
 import RatchetCore
 import FreeAgentKit
+import ServiceManagement
 
 /// `@MainActor` because AppKit only ever calls a delegate on the main thread, and its stored
 /// properties (`URLSchemeHandler`, `StatusItemController`) are main-actor-isolated themselves.
@@ -10,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private let urlSchemeHandler = URLSchemeHandler()
     private let tokenStore = KeychainTokenStore()
-    private let environment: FreeAgentEnvironment = .sandbox
+    private let environment = FreeAgentEnvironment.configured
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         urlSchemeHandler.register()
@@ -21,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let authenticator = FreeAgentAuthenticator(environment: environment, apiClient: apiClient)
         let dataStore = FreeAgentDataStore(apiClient: apiClient, environment: environment)
         let appState = AppState()
+        // Reads real state rather than defaulting to false, so the checkbox is right even if the
+        // user enabled/disabled the login item outside the app, e.g. via System Settings.
+        appState.setLaunchAtLogin(isLaunchAtLoginEnabled())
 
         let controller = StatusItemController(
             appState: appState,
@@ -32,7 +36,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let tokens = try await authenticator.handleCallback(url: callbackURL, expectedState: expectedState)
                 guard tokenStore.save(tokens) else { throw FreeAgentError.credentialStorageFailed }
             },
-            restoreRunningTimer: { restoreRunningTimer(from: dataStore, into: appState) }
+            restoreRunningTimer: { restoreRunningTimer(from: dataStore, into: appState) },
+            setLaunchAtLogin: { enabled in
+                // SMAppService's calls are documented safe from any thread, but they're
+                // synchronous, blocking XPC round-trips to smd that can take seconds on first
+                // registration — running them straight from this @MainActor closure would hang
+                // the menu bar and elapsed-timer tick for that long. Task.detached moves the
+                // actual blocking work off the main actor; only the returned result crosses back.
+                try await Task.detached {
+                    if enabled {
+                        try SMAppService.mainApp.register()
+                        // register() can return without throwing while still sitting in
+                        // .requiresApproval — macOS requires the user to approve the login item in
+                        // System Settings on first registration. That's not a failure, but it also
+                        // isn't "enabled" yet, so report the real status rather than `enabled`.
+                        return isLaunchAtLoginEnabled()
+                    } else {
+                        try SMAppService.mainApp.unregister()
+                        return false
+                    }
+                }.value
+            }
         )
         statusItemController = controller
 
@@ -67,6 +91,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+}
+
+/// Single definition of "enabled" for the launch-at-login checkbox, shared by the launch-time
+/// seed and `setLaunchAtLogin`'s post-register re-read so the two can't drift. Not `@MainActor`:
+/// `SMAppService`'s properties are documented safe from any thread, and this needs to be callable
+/// from inside `Task.detached` (nonisolated) as well as from `applicationDidFinishLaunching`.
+private nonisolated func isLaunchAtLoginEnabled() -> Bool {
+    SMAppService.mainApp.status == .enabled
 }
 
 /// Adopts whatever timer FreeAgent reports as running into local `AppState`, so the menu shows

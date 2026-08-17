@@ -110,6 +110,24 @@ PLIST
 
 touch "$APP_DIR"
 
+# A stable identity matters beyond just quieting the Keychain-access reprompt this was originally
+# for: SMAppService (Launch at Login) ties its registration to the code signature's Identifier,
+# which for the default ad-hoc signature `swift build` applies regenerates on every rebuild —
+# macOS then sees a "new" app each time and drops the previous Launch at Login registration
+# silently. `--identifier` pins it to the stable bundle ID regardless of which signing identity
+# below actually gets used, so that part holds even in the ad-hoc fallback case.
+#
+# `-p codesigning` in `find-identity` also filters on trust policy, which a fresh self-signed cert
+# doesn't satisfy without the user explicitly setting it in Keychain Access — `find-certificate`
+# only checks existence, which is all `codesign -s` itself needs to use the identity locally.
+if security find-certificate -c "Ratchet" > /dev/null 2>&1; then
+    codesign --force --timestamp=none --sign "Ratchet" --identifier com.ratchet.app "$APP_DIR"
+else
+    echo "WARNING: no 'Ratchet' code signing certificate found in Keychain — building ad-hoc." >&2
+    echo "  Launch at Login won't persist across rebuilds until it exists. See TODO.md." >&2
+    codesign --force --timestamp=none --sign - --identifier com.ratchet.app "$APP_DIR"
+fi
+
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 if [[ -x "$LSREGISTER" ]]; then
     "$LSREGISTER" -f "$APP_DIR"

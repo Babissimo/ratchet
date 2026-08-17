@@ -55,8 +55,14 @@ public final class FreeAgentAuthenticator {
         return (url, state)
     }
 
-    /// Validates the callback URL against the nonce from `buildAuthorizeURL`,
-    /// then exchanges the code for tokens.
+    /// Validates the callback URL against the nonce from `buildAuthorizeURL`, then exchanges the
+    /// code for tokens.
+    ///
+    /// PKCE (RFC 7636) was tried here and reverted — live-tested against FreeAgent's sandbox,
+    /// dropping the client secret entirely got `invalid_grant` on every token exchange. FreeAgent's
+    /// OAuth app registration is a confidential-client type; it doesn't recognize
+    /// `code_challenge`/`code_verifier` and still requires `Authorization: Basic` with the secret.
+    /// See `FreeAgentAPIClient.exchangeAuthorizationCode`.
     public func handleCallback(url: URL, expectedState: String) async throws -> FreeAgentTokens {
         guard let result = OAuthCallbackParser.parse(url: url) else {
             throw FreeAgentError.authCancelled

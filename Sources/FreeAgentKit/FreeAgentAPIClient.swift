@@ -122,13 +122,16 @@ public final class FreeAgentAPIClient {
 
     // MARK: - OAuth token exchange (unauthenticated)
 
+    /// `Authorization: Basic base64(clientID:clientSecret)` — FreeAgent's OAuth app registration
+    /// is a confidential-client type, not a public one. PKCE was tried instead of this (no secret
+    /// in the compiled binary) and live-tested against the sandbox: every exchange came back
+    /// `invalid_grant`, because FreeAgent doesn't recognize `code_challenge`/`code_verifier` and
+    /// still requires the secret regardless. Reverted; see `FreeAgentAuthenticator.handleCallback`.
     public func exchangeAuthorizationCode(_ code: String, redirectURI: String) async throws -> FreeAgentTokens {
         var request = URLRequest(url: environment.tokenURL)
         request.httpMethod = "POST"
-        let credentials = "\(FreeAgentSecrets.clientID):\(FreeAgentSecrets.clientSecret)"
-        let encodedCredentials = Data(credentials.utf8).base64EncodedString()
-        request.setValue("Basic \(encodedCredentials)", forHTTPHeaderField: "Authorization")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("Basic \(basicAuthValue())", forHTTPHeaderField: "Authorization")
         let form = "grant_type=authorization_code&code=\(urlEncoded(code))&redirect_uri=\(urlEncoded(redirectURI))"
         request.httpBody = Data(form.utf8)
 
@@ -140,16 +143,18 @@ public final class FreeAgentAPIClient {
     public func refreshTokens(_ refreshToken: String) async throws -> FreeAgentTokens {
         var request = URLRequest(url: environment.tokenURL)
         request.httpMethod = "POST"
-        let credentials = "\(FreeAgentSecrets.clientID):\(FreeAgentSecrets.clientSecret)"
-        let encodedCredentials = Data(credentials.utf8).base64EncodedString()
-        request.setValue("Basic \(encodedCredentials)", forHTTPHeaderField: "Authorization")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("Basic \(basicAuthValue())", forHTTPHeaderField: "Authorization")
         let form = "grant_type=refresh_token&refresh_token=\(urlEncoded(refreshToken))"
         request.httpBody = Data(form.utf8)
 
         let (data, response) = try await send(request)
         try throwIfError(status: response.statusCode, data: data)
         return try decodeTokenResponse(data)
+    }
+
+    private func basicAuthValue() -> String {
+        Data("\(FreeAgentSecrets.clientID):\(FreeAgentSecrets.clientSecret)".utf8).base64EncodedString()
     }
 
     // MARK: - Private helpers

@@ -12,14 +12,29 @@ public final class StatusItemController {
     /// restore in `AppDelegate` call.
     public typealias RestoreRunningTimerHandler = () -> Void
 
+    /// The actual `SMAppService.mainApp.register()`/`.unregister()` call. Injected rather than
+    /// called directly here because `ServiceManagement` is a system side effect on par with
+    /// `performLogin`/`restoreRunningTimer` above — `RatchetCore` stays a place that only
+    /// describes what should happen, and the executable target (which already owns the other
+    /// real-world calls) supplies how.
+    ///
+    /// Returns the state actually achieved rather than `Void`: `register()` can return
+    /// successfully while the login item sits in `.requiresApproval` (common on first
+    /// registration, until the user approves it in System Settings) — not an error, but also
+    /// not "enabled" yet. The caller uses the returned value, not the requested one, to decide
+    /// what the checkbox should show.
+    public typealias SetLaunchAtLoginHandler = (Bool) async throws -> Bool
+
     private let statusItem: NSStatusItem
     private let appState: AppState
     private let dataStore: DataStore
     private let performLogin: LoginHandler
     private let restoreRunningTimer: RestoreRunningTimerHandler
+    private let setLaunchAtLogin: SetLaunchAtLoginHandler
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
     private var isLoggingIn = false
+    private var isChangingLaunchAtLogin = false
     private var appearanceObservation: NSKeyValueObservation?
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
@@ -33,13 +48,15 @@ public final class StatusItemController {
         dataStore: DataStore,
         statusBar: NSStatusBar = .system,
         performLogin: @escaping LoginHandler = {},
-        restoreRunningTimer: @escaping RestoreRunningTimerHandler = {}
+        restoreRunningTimer: @escaping RestoreRunningTimerHandler = {},
+        setLaunchAtLogin: @escaping SetLaunchAtLoginHandler = { _ in false }
     ) {
         self.appState = appState
         self.dataStore = dataStore
         self.statusItem = statusBar.statusItem(withLength: NSStatusItem.squareLength)
         self.performLogin = performLogin
         self.restoreRunningTimer = restoreRunningTimer
+        self.setLaunchAtLogin = setLaunchAtLogin
         appState.onChange = { [weak self] in self?.rebuild() }
         rebuild()
 
@@ -80,8 +97,12 @@ public final class StatusItemController {
                     // tracking, from identical server state.
                     self.restoreRunningTimer()
                     self.rebuild()
+                    self.presentLoginSucceeded()
                 } catch {
-                    self.presentAPIError(error, action: "log in")
+                    // Not `presentAPIError`: there's no session yet to have expired, so a 401 here
+                    // (wrong/rejected client credentials, a PKCE mismatch) must not be described as
+                    // one — "Ratchet signed you out" would be a lie about someone never signed in.
+                    self.presentLoginFailedError(error)
                 }
             }
         },
@@ -124,8 +145,27 @@ public final class StatusItemController {
             }
         },
         toggleLaunchAtLogin: { [weak self] in
-            guard let self else { return }
-            self.appState.setLaunchAtLogin(!self.appState.launchAtLoginEnabled)
+            guard let self, !self.isChangingLaunchAtLogin else { return }
+            self.isChangingLaunchAtLogin = true
+            let wanted = !self.appState.launchAtLoginEnabled
+            Task { @MainActor in
+                defer { self.isChangingLaunchAtLogin = false }
+                do {
+                    // Flip `appState` to whatever `SMAppService` actually achieved, not what was
+                    // asked for — e.g. it stays unchecked if registration is blocked by a system
+                    // policy, or left pending approval in System Settings.
+                    let actuallyEnabled = try await self.setLaunchAtLogin(wanted)
+                    self.appState.setLaunchAtLogin(actuallyEnabled)
+                    // register() can succeed (no throw) yet still land in .requiresApproval — the
+                    // checkbox reverting on its own with no explanation reads as a broken toggle,
+                    // so name the actual reason instead of leaving it silent.
+                    if wanted && !actuallyEnabled {
+                        self.presentLaunchAtLoginNeedsApproval()
+                    }
+                } catch {
+                    self.presentAPIError(error, action: "change Launch at Login")
+                }
+            }
         },
         openFreeAgent: { [weak self] in
             let url = self?.dataStore.webAppURL ?? URL(string: "https://app.freeagent.com")!
@@ -171,6 +211,49 @@ public final class StatusItemController {
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    /// Without this, a successful login has no feedback of its own — the only sign anything
+    /// happened is that the menu's contents are different next time it's opened.
+    private func presentLoginSucceeded() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.icon = Self.formIcon
+        alert.messageText = "Signed in to FreeAgent"
+        alert.informativeText = "Signed in as \(dataStore.accountEmail)."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// A login attempt that never got as far as an established session failing is a different
+    /// event from an established session going bad — see the call site in `logIn`'s catch block.
+    private func presentLoginFailedError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't sign in to FreeAgent"
+        alert.informativeText = "\(error)"
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// macOS requires explicit user approval in System Settings the first time an app registers
+    /// a login item — `register()` doesn't throw for this, so without this alert the checkbox
+    /// would just silently revert with no way for the user to tell "pending approval" apart from
+    /// "the toggle is broken."
+    private func presentLaunchAtLoginNeedsApproval() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Launch at Login needs approval"
+        alert.informativeText = "macOS needs you to approve this in System Settings > General > Login Items before Ratchet will launch at login."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func presentAPIError(_ error: Error, action: String) {
