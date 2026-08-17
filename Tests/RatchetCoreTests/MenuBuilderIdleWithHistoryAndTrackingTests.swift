@@ -113,7 +113,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { switchedTo = $0 },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
-            switchToNewTask: { _, _ in }, quit: {}
+            switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let state = AppState()
         state.logIn()
