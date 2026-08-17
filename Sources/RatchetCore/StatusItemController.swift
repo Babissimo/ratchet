@@ -37,6 +37,7 @@ public final class StatusItemController {
     private var isChangingLaunchAtLogin = false
     private let now: () -> Date
     private var appearanceObservation: NSKeyValueObservation?
+    private var wakeObserver: NSObjectProtocol?
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
     public var statusItemForTesting: NSStatusItem { statusItem }
@@ -74,11 +75,29 @@ public final class StatusItemController {
                 self?.updateIcon()
             }
         }
+
+        // A sleeping Mac is the single biggest source of staleness — a timer stopped elsewhere
+        // hours ago wouldn't otherwise be caught until the next menu open. Gated by the same
+        // `silentlyRefreshIfStale()` threshold as the menu-open trigger, so rapid sleep/wake
+        // (e.g. lid flutter) doesn't fire repeated requests.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            // NSWorkspace.notificationCenter with queue: .main delivers on the main thread;
+            // this mirrors the `MainActor.assumeIsolated` justification already used for the
+            // appearance observation.
+            MainActor.assumeIsolated {
+                self?.silentlyRefreshIfStale()
+            }
+        }
     }
 
     deinit {
         elapsedTimer?.invalidate()
         appearanceObservation?.invalidate()
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
     }
 
     private lazy var actions: MenuActions = MenuActions(

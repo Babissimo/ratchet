@@ -132,6 +132,39 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
     }
 
+    func test_systemWake_refreshesWhenStale() async {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
+        appState.logIn()
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        await drainMainActorQueue()
+
+        XCTAssertEqual(dataStore.refreshCount, 1)
+    }
+
+    func test_systemWake_skipsRefreshWhenRecentlyRefreshed() async throws {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        try await dataStore.refresh()
+        XCTAssertEqual(dataStore.refreshCount, 1)
+
+        let fixedNow = Date()
+        let controller = StatusItemController(
+            appState: appState, dataStore: dataStore,
+            now: { fixedNow }
+        )
+        self.controller = controller
+        appState.logIn()
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        await drainMainActorQueue()
+
+        XCTAssertEqual(dataStore.refreshCount, 1, "a refresh 0s ago is well within the 2-minute staleness threshold")
+    }
+
     /// Fire-and-forget `Task { @MainActor in ... }` work (like `silentlyRefreshIfStale()`) needs
     /// somewhere to run before assertions read its effects. `FakeDataStore.refresh()` never
     /// suspends on real I/O, so a handful of yields is enough for it to complete — cheaper and
