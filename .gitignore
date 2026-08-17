@@ -1,3 +1,4 @@
 .worktrees/
 Sources/FreeAgentKit/Secrets.swift
 .build/
+.claude/
