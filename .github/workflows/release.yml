@@ -8,10 +8,12 @@
 # and Sources/FreeAgentKit/Secrets.swift is gitignored per CLAUDE.md — a
 # fresh checkout, including this runner, won't compile without it. Before
 # this workflow can run successfully, add these repository secrets
-# (Settings -> Secrets and variables -> Actions) with real values from a
-# FreeAgent Developer Dashboard app registered against production, not
-# sandbox (https://dev.freeagent.com/) — release builds are what real users
-# get, so they're always built against FreeAgentEnvironment.production:
+# (Settings -> Secrets and variables -> Actions) with the same client
+# ID/secret already in use locally (from the FreeAgent Developer Dashboard,
+# https://dev.freeagent.com/) — live-tested confirming this one OAuth app
+# isn't sandbox-gated, so no separate production registration is needed.
+# Release builds are what real users get, so they're always built against
+# FreeAgentEnvironment.production regardless:
 #
 #   FREEAGENT_CLIENT_ID
 #   FREEAGENT_CLIENT_SECRET

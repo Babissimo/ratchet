@@ -66,13 +66,15 @@ that constraint; each item notes what it costs to skip signing.
   wired to `.production` or vice versa. `Secrets.swift.example` and the
   local `Secrets.swift` both default to `.sandbox`;
   `.github/workflows/release.yml` generates `.production` for release
-  builds. Remaining work: **register a real (non-sandbox) FreeAgent OAuth
-  app** at dev.freeagent.com, set its redirect URI to `ratchet://callback`
-  (same as sandbox), and add its client ID/secret as the
-  `FREEAGENT_CLIENT_ID`/`FREEAGENT_CLIENT_SECRET` repo secrets the release
-  workflow reads — those don't exist yet, so the workflow won't build
-  until they're added. Nothing else code-side is needed once that app
-  exists.
+  builds. Live-tested: flipping the local `Secrets.swift` to
+  `.production` and logging in against the real FreeAgent account
+  succeeded first try — the existing OAuth app (already connected to
+  the account) isn't sandbox-gated, so no separate production app
+  registration is needed after all. Remaining work is just plumbing:
+  add the *same* client ID/secret as the `FREEAGENT_CLIENT_ID`/
+  `FREEAGENT_CLIENT_SECRET` repo secrets the release workflow reads
+  (once the repo is public — see below). Nothing else code-side is
+  needed.
 
 ## Distribution without notarization
 
@@ -97,6 +99,29 @@ that constraint; each item notes what it costs to skip signing.
   for acceptance. A personal tap (`brew tap <you>/ratchet`) has no such
   gate — `Casks/ratchet.rb` is drafted and ready to host there, with
   placeholder `version`/`sha256`/`url` to fill in once a release exists.
+
+## Feature backlog
+
+- [ ] **Explore how a timer ought to and does work across days.** What
+  FreeAgent actually does with a timeslip that's still running when the
+  calendar day rolls over, and what Ratchet should do to match (or
+  intentionally diverge).
+- [ ] **Contact integrationsrequests@freeagent.com to make it official.**
+  Pursue listing/partnership status for the app.
+- [ ] **Icons next to some menu buttons**, beyond the current
+  `RatchetIcon.mark`/`.appTile` usage.
+- [ ] **Submenu of tasks to switch what's being tracked while a timer is
+  active** — currently switching tasks mid-timer isn't a first-class
+  menu action.
+- [ ] **Offline/intermittent connection support** — start tracking while
+  offline, sync to FreeAgent automatically once back online.
+- [ ] **Support multiple simultaneous timers**, matching the FreeAgent web
+  app. `AppState`/`FreeAgentDataStore` currently model a single
+  `currentRunningTimeslip`/`trackingTask` — this would be a real data-model
+  change, not just a UI one.
+- [ ] **Make "Recent time entries" editable** — clicking an entry in the
+  menu should let its logged hours/task/comment be updated, not just
+  viewed.
 
 ## Not blocking, revisit later
 
