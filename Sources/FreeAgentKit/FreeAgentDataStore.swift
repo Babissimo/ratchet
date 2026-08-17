@@ -64,7 +64,7 @@ public final class FreeAgentDataStore: DataStore {
                 URLQueryItem(name: "user", value: currentUserURL),
             ], listKey: "timeslips"
         )
-        async let runningFetch = fetchRunningTimeslip()
+        async let runningFetch = fetchRunningTimeslipDTO()
 
         let contacts = try await contactsFetch
         let projects = try await projectsFetch
@@ -90,7 +90,14 @@ public final class FreeAgentDataStore: DataStore {
         // Kept sorted ascending by date so the array has one defined order regardless of what
         // sequence pagination returned; `logTime` preserves it on insert.
         timeslips = recentTimeslips.map { resolvedTimeslip($0) }.sorted { $0.date < $1.date }
-        currentRunningTimeslip = try await runningFetch
+        // Resolved here, not inside the concurrently-running fetch above: resolvedTimeslip needs
+        // projectToClientId, which this function only populates once `projects` (fetched
+        // concurrently alongside the running-timeslip query) has been awaited. Calling it from
+        // inside the async let race let currentRunningTimeslip.clientId come back "" whenever the
+        // running-timeslip request happened to finish first — on a fresh login, with
+        // projectToClientId still empty, that made restoreRunningTimer's client lookup fail
+        // silently, hiding an actually-running FreeAgent timer.
+        currentRunningTimeslip = try await runningFetch.map { resolvedTimeslip($0) }
 
         lastRefreshedAt = clock()
     }
@@ -155,15 +162,22 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     /// The authoritative "is anything running for this user" query, shared by `refresh()` and
-    /// `stopTimer()`'s fallback.
-    private func fetchRunningTimeslip() async throws -> RatchetTimeslip? {
+    /// `stopTimer()`'s fallback. Returns the raw DTO rather than resolving it to a
+    /// `RatchetTimeslip` — `refresh()` runs this concurrently with the projects fetch that
+    /// `resolvedTimeslip` depends on, so resolution has to happen after that fetch is awaited,
+    /// not inside this function.
+    private func fetchRunningTimeslipDTO() async throws -> FreeAgentTimeslipDTO? {
         let running: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
                 URLQueryItem(name: "view", value: "running"),
                 URLQueryItem(name: "user", value: currentUserURL),
             ], listKey: "timeslips"
         )
-        return running.first.map { resolvedTimeslip($0) }
+        return running.first
+    }
+
+    private func fetchRunningTimeslip() async throws -> RatchetTimeslip? {
+        try await fetchRunningTimeslipDTO().map { resolvedTimeslip($0) }
     }
 
     public func addClient(

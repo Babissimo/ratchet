@@ -138,6 +138,11 @@ public final class StatusItemController {
             Task { @MainActor in
                 do {
                     try await self.dataStore.refresh()
+                    // Same adoption the launch and login paths do — without this, a timer started
+                    // elsewhere (the FreeAgent web app, another device) after this app was already
+                    // logged in never appeared here even after a manual refresh, because
+                    // dataStore.currentRunningTimeslip updating doesn't by itself touch appState.
+                    self.restoreRunningTimer()
                     self.rebuild()
                 } catch {
                     self.presentAPIError(error, action: "refresh")
