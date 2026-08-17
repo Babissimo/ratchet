@@ -103,6 +103,46 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        // Ask the server first, same as stopTimer()'s fallback: the today-scoped "existing
+        // timeslip for this task" query below only finds a timeslip *created* today, not one
+        // still running from before midnight — FreeAgent doesn't re-date a timeslip's
+        // `dated_on` when its timer crosses a day boundary. Without this check, restarting a
+        // timer for the same task after the day rolled over (app restart, some other code path
+        // re-invoking start) found nothing "for today" and created a second, duplicate timeslip
+        // while the original kept running server-side.
+        let running: RatchetTimeslip?
+        if let cached = currentRunningTimeslip {
+            running = cached
+        } else {
+            running = try await fetchRunningTimeslip()
+        }
+        if let running {
+            if running.taskId == taskId {
+                // Already running for exactly the task being requested — resume it rather than
+                // starting (or creating) a second timeslip. Re-stamped with the caller's
+                // `clientId`, matching the two paths below, rather than whatever `running`
+                // already carried (from cache, or freshly resolved via `projectToClientId`) —
+                // keeps this path consistent with the others if the two ever disagree.
+                let resumed = RatchetTimeslip(
+                    id: running.id, clientId: clientId, projectId: running.projectId, taskId: running.taskId,
+                    date: running.date, hours: running.hours, comment: running.comment
+                )
+                currentRunningTimeslip = resumed
+                return resumed
+            }
+            // The menu only ever offers "Start tracking" from the idle screen — never alongside
+            // an active .tracking screen — so a running timeslip for a *different* task here
+            // means local state has drifted from the server (a timer started from the FreeAgent
+            // web app, another device, or a stale cache), not a normal call path. The app has no
+            // multi-timer support (see TODO.md), so surface this rather than silently stopping
+            // someone else's/another device's timer out from under them.
+            // "Stop it first" has no menu route from the idle screen (only "Switch task", on the
+            // tracking screen, offers a stop) — pointing at Refresh gives the idle-screen user
+            // an actual next step: it re-adopts the drifted timer so it shows as tracking here,
+            // and only then does "Stop tracking" exist to act on it.
+            throw DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there.")
+        }
+
         let today = todayString()
         let existing: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
@@ -300,6 +340,44 @@ public final class FreeAgentDataStore: DataStore {
         // top of "Recent time entries" until the next refresh reshuffled it.
         let insertionIndex = timeslips.firstIndex { $0.date > resolved.date } ?? timeslips.endIndex
         timeslips.insert(resolved, at: insertionIndex)
+        return resolved
+    }
+
+    public func updateTimeslip(
+        id: String, taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
+    ) async throws -> RatchetTimeslip {
+        // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
+        // record, not a partial patch, so reassigning the task means resending project/task too.
+        struct UpdateTimeslipBody: Encodable {
+            let project: String
+            let task: String
+            let user: String
+            let dated_on: String
+            let hours: String
+            let comment: String?
+        }
+        let updated: FreeAgentTimeslipDTO = try await apiClient.put(
+            id, envelopeKey: "timeslip",
+            body: UpdateTimeslipBody(
+                project: projectId, task: taskId, user: currentUserURL,
+                dated_on: dateString(date), hours: String(hours), comment: comment
+            )
+        )
+        let resolved = resolvedTimeslip(updated, clientId: clientId)
+        // Replaced in place if still cached, rather than assuming it must be — an edit from a
+        // stale menu (built before the entry aged out of the `refresh()` window, or from a
+        // duplicate submenu still open after the underlying array changed) shouldn't silently
+        // reinsert a slip the local cache had already dropped.
+        if let index = timeslips.firstIndex(where: { $0.id == id }) {
+            timeslips[index] = resolved
+        }
+        // `currentRunningTimeslip` is a separate stored property, not derived from `timeslips`
+        // — "Switch task" edits a *running* timeslip's task in place (see `StatusItemController.
+        // switchTask`) without stopping its timer, so without this the cache would keep
+        // pointing at the pre-edit task/project/client until the next `refresh()`.
+        if currentRunningTimeslip?.id == id {
+            currentRunningTimeslip = resolved
+        }
         return resolved
     }
 

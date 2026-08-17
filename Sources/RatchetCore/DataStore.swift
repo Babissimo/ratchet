@@ -11,6 +11,11 @@ public protocol DataStore: AnyObject {
     var accountEmail: String { get }
     var timeslips: [RatchetTimeslip] { get }
     var lastRefreshedAt: Date? { get }
+    /// The timeslip whose timer is currently running, if any; nil when nothing is. FreeAgent
+    /// doesn't live-update a running timeslip's `hours` — it only reflects hours as of the last
+    /// pause — so `MenuBuilder.buildRecentTimeEntriesSubmenu` excludes this entry rather than
+    /// showing a duration that's stale from the moment the timer was last resumed.
+    var currentRunningTimeslip: RatchetTimeslip? { get }
     /// The signed-in account's own FreeAgent web app URL, for "Open FreeAgent" — nil until
     /// known (e.g. before the first successful `refresh()`).
     var webAppURL: URL? { get }
@@ -59,6 +64,21 @@ public protocol DataStore: AnyObject {
     ) async throws -> RatchetProject
 
     func logTime(
+        taskId: String,
+        projectId: String,
+        clientId: String,
+        date: Date,
+        hours: Double,
+        comment: String?
+    ) async throws -> RatchetTimeslip
+
+    /// Edits an already-logged entry in place — the counterpart to `logTime`'s "create". `id`
+    /// identifies the timeslip being changed; the rest are its full replacement values (FreeAgent's
+    /// timeslip PUT takes the complete record, not a partial patch), including which client/
+    /// project/task it's now booked against, so "Recent time entries" can reassign a mis-logged
+    /// entry rather than only tweaking its hours/comment.
+    func updateTimeslip(
+        id: String,
         taskId: String,
         projectId: String,
         clientId: String,

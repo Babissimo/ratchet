@@ -13,15 +13,33 @@ final class FakeDataStore: DataStore {
     /// id of the timeslip with a currently-running timer, if any.
     private var runningTimeslipId: String?
 
+    /// Computed, not stored: `runningTimeslipId` is the single source of truth (kept in sync by
+    /// `startTimer`/`stopTimer`), so deriving this from it — same as `FreeAgentDataStore` derives
+    /// its own stored property from the API's running-timeslip response — rules out the two ever
+    /// disagreeing.
+    var currentRunningTimeslip: RatchetTimeslip? {
+        guard let runningTimeslipId else { return nil }
+        return timeslips.first { $0.id == runningTimeslipId }
+    }
+
     private let clock: () -> Date
 
-    init(clients: [RatchetClient], accountEmail: String, clock: @escaping () -> Date = Date.init) {
+    init(clients: [RatchetClient], accountEmail: String, timeslips: [RatchetTimeslip] = [], clock: @escaping () -> Date = Date.init) {
         self.clients = clients
         self.accountEmail = accountEmail
+        self.timeslips = timeslips
         self.clock = clock
     }
 
-    static func seeded() -> FakeDataStore {
+    /// Test-only seam: directly sets the "Recent time entries" backing array and, optionally,
+    /// which of those entries is the one with a running timer — mirroring how `refresh()`
+    /// populates both from the API without going through `startTimer`'s day-matching logic.
+    func seedTimeslips(_ entries: [RatchetTimeslip], runningId: String? = nil) {
+        timeslips = entries
+        runningTimeslipId = runningId
+    }
+
+    static func seeded(timeslips: [RatchetTimeslip] = []) -> FakeDataStore {
         let developmentTask = RatchetTask(id: "task-1", name: "Development")
         let designTask = RatchetTask(id: "task-2", name: "Design")
         let websiteProject = RatchetProject(id: "proj-1", name: "Website Redesign", tasks: [developmentTask, designTask])
@@ -29,7 +47,7 @@ final class FakeDataStore: DataStore {
         let retainerProject = RatchetProject(id: "proj-2", name: "Q3 Retainer", tasks: [copywritingTask])
         let acme = RatchetClient(id: "client-1", name: "Acme", projects: [websiteProject, retainerProject])
         let otherCo = RatchetClient(id: "client-2", name: "Other Co", projects: [])
-        return FakeDataStore(clients: [acme, otherCo], accountEmail: "al@example.com")
+        return FakeDataStore(clients: [acme, otherCo], accountEmail: "al@example.com", timeslips: timeslips)
     }
 
     func addTask(
@@ -152,6 +170,29 @@ final class FakeDataStore: DataStore {
         return entry
     }
 
+    func updateTimeslip(
+        id: String,
+        taskId: String,
+        projectId: String,
+        clientId: String,
+        date: Date,
+        hours: Double,
+        comment: String? = nil
+    ) async throws -> RatchetTimeslip {
+        guard let index = timeslips.firstIndex(where: { $0.id == id }) else { throw DataStoreError.notFound }
+        guard let client = clients.first(where: { $0.id == clientId }),
+              let project = client.projects.first(where: { $0.id == projectId }),
+              project.tasks.contains(where: { $0.id == taskId })
+        else { throw DataStoreError.notFound }
+
+        let updated = RatchetTimeslip(
+            id: id, clientId: clientId, projectId: projectId, taskId: taskId,
+            date: date, hours: hours, comment: comment
+        )
+        timeslips[index] = updated
+        return updated
+    }
+
     func refresh() async throws {
         refreshCount += 1
         lastRefreshedAt = clock()
@@ -162,6 +203,15 @@ final class FakeDataStore: DataStore {
               let project = client.projects.first(where: { $0.id == projectId }),
               project.tasks.contains(where: { $0.id == taskId })
         else { throw DataStoreError.notFound }
+
+        // Mirrors FreeAgentDataStore.startTimer's conflict guard: a running timeslip for a
+        // *different* task means local/server state drifted (the menu never offers "Start" for
+        // a task other than the one already tracking), so this throws instead of implicitly
+        // switching — a fake that silently switched let a regression in the real guard sail
+        // through any test written against this one.
+        if let runningTimeslipId, let running = timeslips.first(where: { $0.id == runningTimeslipId }), running.taskId != taskId {
+            throw DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there.")
+        }
 
         // Deliberately mirrors FreeAgentDataStore.startTimer: resume today's existing timeslip for
         // this task instead of opening a second one, creating a slip only when none exists. A fake
@@ -181,8 +231,8 @@ final class FakeDataStore: DataStore {
             return timeslips[index]
         }
 
-        // Starting a new timer implicitly stops whichever one was running: `runningTimeslipId`
-        // is simply reassigned below, and the old entry keeps whatever hours it had accrued.
+        // Nothing was running (the guard above would have thrown or resumed otherwise), so this
+        // is a genuinely fresh start — `runningTimeslipId` is simply assigned below.
         let entry = RatchetTimeslip(
             id: "timeslip-\(UUID().uuidString.prefix(8))",
             clientId: clientId,

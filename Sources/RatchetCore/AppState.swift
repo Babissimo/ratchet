@@ -55,6 +55,18 @@ public final class AppState {
         onChange?()
     }
 
+    /// Reassigns the task of an *already-running* timer without touching `trackingStartedAt` —
+    /// "Switch task" edits the running timeslip's task in place server-side rather than
+    /// stopping and restarting it, so the elapsed-time baseline must keep counting from the
+    /// original start instant, not reset to now. No-op (beyond `onChange`) if nothing is
+    /// currently tracking, since there's no running timer to reassign.
+    public func retask(_ task: TrackedTaskRef) {
+        guard trackingStartedAt != nil else { return }
+        trackingTask = task
+        mostRecent = task
+        onChange?()
+    }
+
     public func stopTracking() {
         trackingTask = nil
         trackingStartedAt = nil

@@ -18,7 +18,9 @@ public enum MenuBuilder {
     private static func buildLoggedOut(actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(ClosureMenuItem(title: "Log in with browser", handler: actions.logIn))
+        let logInItem = ClosureMenuItem(title: "Log in with browser", handler: actions.logIn)
+        logInItem.image = menuIcon("safari", "Log in with browser")
+        menu.addItem(logInItem)
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
         return menu
@@ -34,20 +36,25 @@ public enum MenuBuilder {
                 firstLine: title,
                 secondLine: "\(mostRecent.clientName) · \(mostRecent.projectName)"
             )
+            item.image = menuIcon("play.fill", "Start tracking")
             menu.addItem(item)
         }
         let startItem = NSMenuItem(title: "Start timer", action: nil, keyEquivalent: "")
+        startItem.image = menuIcon("play.fill", "Start timer")
         startItem.submenu = buildStartSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(startItem)
         menu.addItem(.separator())
         let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
+        logPastTimeItem.image = menuIcon("clock.arrow.circlepath", "Log past time")
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(logPastTimeItem)
         let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
-        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
+        recentItem.image = menuIcon("list.bullet.clipboard", "Recent time entries")
+        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settingsItem.image = menuIcon("gearshape", "Settings")
         settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
         menu.addItem(settingsItem)
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
@@ -65,16 +72,24 @@ public enum MenuBuilder {
             firstLine: stopTitle,
             secondLine: "\(task.clientName) · \(task.projectName)"
         )
+        stopItem.image = menuIcon("stop.fill", "Stop tracking")
         menu.addItem(stopItem)
+        let switchItem = NSMenuItem(title: "Switch task", action: nil, keyEquivalent: "")
+        switchItem.image = menuIcon("arrow.triangle.2.circlepath", "Switch task")
+        switchItem.submenu = buildSwitchTaskSubmenu(dataStore: dataStore, actions: actions, currentTaskId: task.taskId)
+        menu.addItem(switchItem)
         menu.addItem(.separator())
         let logPastTimeItem = NSMenuItem(title: "Log past time", action: nil, keyEquivalent: "")
+        logPastTimeItem.image = menuIcon("clock.arrow.circlepath", "Log past time")
         logPastTimeItem.submenu = buildLogPastTimeSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(logPastTimeItem)
         let recentItem = NSMenuItem(title: "Recent time entries", action: nil, keyEquivalent: "")
-        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore)
+        recentItem.image = menuIcon("list.bullet.clipboard", "Recent time entries")
+        recentItem.submenu = buildRecentTimeEntriesSubmenu(dataStore: dataStore, actions: actions)
         menu.addItem(recentItem)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settingsItem.image = menuIcon("gearshape", "Settings")
         settingsItem.submenu = buildSettingsSubmenu(dataStore: dataStore, state: state, actions: actions)
         menu.addItem(settingsItem)
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
@@ -106,6 +121,24 @@ public enum MenuBuilder {
         ))
     }
 
+    /// "Switch task", reachable only from the tracking screen, is the same picker whose leaves
+    /// stop the running timer and start tracking the picked (or newly created) task instead.
+    /// `currentTaskId` is excluded from the leaves — picking the task that's already running
+    /// would otherwise stop and immediately re-resume the same timer for no reason.
+    static func buildSwitchTaskSubmenu(dataStore: DataStore, actions: MenuActions, currentTaskId: String) -> NSMenu {
+        taskPicker(dataStore: dataStore, actions: actions, leaves: TaskPickerLeaves(
+            chooseTask: { client, project, task in
+                actions.switchTask(TrackedTaskRef(
+                    clientId: client.id, clientName: client.name,
+                    projectId: project.id, projectName: project.name,
+                    taskId: task.id, taskName: task.name
+                ))
+            },
+            chooseNewTask: { client, project in actions.switchToNewTask(client.id, project.id) },
+            excludingTaskId: currentTaskId
+        ))
+    }
+
     /// Everything that distinguishes the two task pickers.
     ///
     /// The pickers used to be two hand-copied three-level trees, identical down to their
@@ -116,6 +149,9 @@ public enum MenuBuilder {
     private struct TaskPickerLeaves {
         let chooseTask: (RatchetClient, RatchetProject, RatchetTask) -> Void
         let chooseNewTask: (RatchetClient, RatchetProject) -> Void
+        /// Omitted from the leaf task list — only "Switch task" sets this, to hide whichever
+        /// task is already running.
+        var excludingTaskId: String? = nil
     }
 
     /// Client → project → task, with an "add one" escape hatch at each level so a user who
@@ -157,10 +193,11 @@ public enum MenuBuilder {
     private static func taskPickerTasks(client: RatchetClient, project: RatchetProject, leaves: TaskPickerLeaves) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        if project.tasks.isEmpty {
+        let tasks = project.tasks.filter { $0.id != leaves.excludingTaskId }
+        if tasks.isEmpty {
             menu.addItem(disabledItem("No tasks"))
         }
-        for task in project.tasks {
+        for task in tasks {
             menu.addItem(ClosureMenuItem(title: task.name, handler: { leaves.chooseTask(client, project, task) }))
         }
         menu.addItem(.separator())
@@ -168,14 +205,21 @@ public enum MenuBuilder {
         return menu
     }
 
-    static func buildRecentTimeEntriesSubmenu(dataStore: DataStore) -> NSMenu {
+    static func buildRecentTimeEntriesSubmenu(dataStore: DataStore, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         // Sorted here rather than trusting the store's array order. That order comes from
         // whatever sequence FreeAgent's pagination happened to return, and `logTime` appends
         // locally — so a back-dated entry logged just now would otherwise sort as the newest
         // thing in the list until the next refresh reshuffled it.
-        let recent = dataStore.timeslips.sorted { $0.date > $1.date }.prefix(20)
+        // Excludes the running entry, not just re-labels it: FreeAgent doesn't live-update a
+        // running timeslip's `hours`, so whatever's on record is stale from the last pause and
+        // it isn't finally logged yet anyway. Filtered before the prefix(20) truncation so
+        // dropping it can reveal a 21st entry rather than shortening the visible list.
+        let recent = dataStore.timeslips
+            .filter { $0.id != dataStore.currentRunningTimeslip?.id }
+            .sorted { $0.date > $1.date }
+            .prefix(20)
         if recent.isEmpty {
             menu.addItem(disabledItem("No time logged yet"))
             return menu
@@ -184,7 +228,9 @@ public enum MenuBuilder {
             let path = path(for: entry, in: dataStore)
             let duration = ElapsedTimeFormatter.format(seconds: entry.hours * 3600)
             let dateText = CalendarDay.displayString(from: entry.date)
-            menu.addItem(disabledItem("\(path) · \(duration) · \(dateText)"))
+            // Clickable rather than `disabledItem`: this is the only route to correcting a
+            // mis-logged entry short of leaving the app and editing it in FreeAgent's web UI.
+            menu.addItem(ClosureMenuItem(title: "\(path) · \(duration) · \(dateText)", handler: { actions.editTimeEntry(entry) }))
         }
         return menu
     }
@@ -199,13 +245,16 @@ public enum MenuBuilder {
     static func buildSettingsSubmenu(dataStore: DataStore, state: AppState, actions: MenuActions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(disabledItem(dataStore.accountEmail))
+        let accountItem = disabledItem(dataStore.accountEmail)
+        accountItem.image = menuIcon("person.crop.circle", "Account")
+        menu.addItem(accountItem)
         let refreshTitle = "Refresh projects & tasks"
         let refreshItem = ClosureMenuItem(title: refreshTitle, handler: actions.refresh)
         refreshItem.attributedTitle = twoLineAttributedTitle(
             firstLine: refreshTitle,
             secondLine: lastRefreshedSubtitle(dataStore.lastRefreshedAt)
         )
+        refreshItem.image = menuIcon("arrow.clockwise", "Refresh")
         menu.addItem(refreshItem)
         let launchItem = ClosureMenuItem(title: "Launch at login", handler: actions.toggleLaunchAtLogin)
         launchItem.state = state.launchAtLoginEnabled ? .on : .off
@@ -213,7 +262,9 @@ public enum MenuBuilder {
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Open FreeAgent", handler: actions.openFreeAgent))
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Log out", handler: actions.logOut))
+        let logOutItem = ClosureMenuItem(title: "Log out", handler: actions.logOut)
+        logOutItem.image = menuIcon("rectangle.portrait.and.arrow.right", "Log out")
+        menu.addItem(logOutItem)
         return menu
     }
 
@@ -221,6 +272,17 @@ public enum MenuBuilder {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
+    }
+
+    /// An SF Symbol sized for a menu row, marked as a template image so AppKit recolors it to
+    /// match the menu's current appearance (regular black glyph in light mode, white in dark
+    /// mode, blue when the row is highlighted) instead of rendering the symbol's own flat color.
+    /// Only applied to the handful of highest-traffic rows — see MenuBuilder's call sites — since
+    /// icon on every row would read as noise rather than a wayfinding aid.
+    private static func menuIcon(_ symbolName: String, _ accessibilityDescription: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)
+        image?.isTemplate = true
+        return image
     }
 
     /// Two-line title (e.g. "Start tracking X" over "Client · Project", or

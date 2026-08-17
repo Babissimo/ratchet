@@ -75,6 +75,9 @@ final class FreeAgentDataStoreTests: XCTestCase {
     func test_startTimer_reusesExistingTimeslipForToday() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // The authoritative "is anything running at all" check startTimer now does first —
+            // nothing running, so it falls through to the today-scoped search below.
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
             // The "find today's timeslip for this task" search — distinguished
             // from the create-POST (plain "timeslips", no query) by "task=".
             (match: "task=", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":null}]}"#.utf8)),
@@ -94,17 +97,76 @@ final class FreeAgentDataStoreTests: XCTestCase {
         XCTAssertEqual(result.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
         XCTAssertEqual(result.clientId, "https://api.sandbox.freeagent.com/v2/contacts/1")
         XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
-        // Only the search + timer-start calls — no create-POST, since a
+        // Running-check + today-search + timer-start — no create-POST, since a
         // timeslip for today already existed.
-        XCTAssertEqual(transport.calls.count, 2)
-        XCTAssertTrue(transport.calls[1].url!.absoluteString.contains("/timer"))
-        XCTAssertEqual(transport.calls[1].httpMethod, "POST")
+        XCTAssertEqual(transport.calls.count, 3)
+        XCTAssertTrue(transport.calls[2].url!.absoluteString.contains("/timer"))
+        XCTAssertEqual(transport.calls[2].httpMethod, "POST")
+        tokenStore.clear()
+    }
+
+    func test_startTimer_resumesAlreadyRunningTimeslipForSameTaskWithoutDuplicating() async throws {
+        // The bug this guards against: a timer started before midnight is still running
+        // server-side under yesterday's `dated_on`, so the today-scoped "existing timeslip for
+        // this task" search (matched on "task=" below) would never find it. Before the fix,
+        // startTimer used only that today-scoped search, so calling it again for the same task
+        // (e.g. app restart while the timer is still running) created a second, duplicate
+        // timeslip dated today. It must resolve via the "is anything running" check up front and
+        // resume the existing running timeslip — with no today-scoped search and no timer-start
+        // POST, since it's already running.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+
+        let result = try await store.startTimer(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+        )
+
+        XCTAssertEqual(result.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
+        XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
+        // Only the running-check call — no today-scoped search, no create, no timer-start.
+        XCTAssertEqual(transport.calls.count, 1)
+        XCTAssertTrue(transport.calls[0].url!.absoluteString.contains("view=running"))
+        tokenStore.clear()
+    }
+
+    func test_startTimer_throwsWhenAnotherTaskIsAlreadyRunning() async throws {
+        // The app enforces single-timer-at-a-time in the UI (the tracking screen's menu offers
+        // only "Stop", never another "Start"), so a running timeslip for a *different* task here
+        // means local/server state has drifted, not a normal call path. startTimer must not
+        // silently stop the other task's timer to start this one.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+
+        do {
+            _ = try await store.startTimer(
+                taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+                projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+                clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+            )
+            XCTFail("expected startTimer to throw when a different task is already running")
+        } catch DataStoreError.underlying {
+            // Expected.
+        } catch {
+            XCTFail("expected DataStoreError.underlying, got \(error)")
+        }
+        XCTAssertNil(store.currentRunningTimeslip)
+        XCTAssertEqual(transport.calls.count, 1)
         tokenStore.clear()
     }
 
     func test_startTimer_createsTimeslipWhenNoneExistsForToday() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // The authoritative "is anything running at all" check startTimer now does first.
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
             // Search finds nothing for today.
             (match: "task=", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
             // Starting the timer on the newly-created timeslip — wrapped as "timeslip" (see the
@@ -123,13 +185,15 @@ final class FreeAgentDataStoreTests: XCTestCase {
 
         XCTAssertEqual(result.id, "https://api.sandbox.freeagent.com/v2/timeslips/99")
         XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/99")
-        // Search + create-POST + timer-start = 3 calls.
-        XCTAssertEqual(transport.calls.count, 3)
+        // Running-check + today-search + create-POST + timer-start = 4 calls.
+        XCTAssertEqual(transport.calls.count, 4)
         XCTAssertEqual(transport.calls[0].httpMethod, "GET")
-        XCTAssertEqual(transport.calls[1].httpMethod, "POST")
-        XCTAssertFalse(transport.calls[1].url!.absoluteString.contains("/timer"))
+        XCTAssertTrue(transport.calls[0].url!.absoluteString.contains("view=running"))
+        XCTAssertEqual(transport.calls[1].httpMethod, "GET")
         XCTAssertEqual(transport.calls[2].httpMethod, "POST")
-        XCTAssertTrue(transport.calls[2].url!.absoluteString.contains("/timer"))
+        XCTAssertFalse(transport.calls[2].url!.absoluteString.contains("/timer"))
+        XCTAssertEqual(transport.calls[3].httpMethod, "POST")
+        XCTAssertTrue(transport.calls[3].url!.absoluteString.contains("/timer"))
         tokenStore.clear()
     }
 
@@ -162,6 +226,82 @@ final class FreeAgentDataStoreTests: XCTestCase {
         let deleteCall = transport.calls.last!
         XCTAssertEqual(deleteCall.httpMethod, "DELETE")
         XCTAssertTrue(deleteCall.url!.absoluteString.contains("/timeslips/77/timer"))
+        tokenStore.clear()
+    }
+
+    func test_updateTimeslip_putsTheFullRecordAndReplacesTheCachedEntry() async throws {
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/42","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-10","hours":"1.0","comment":null,"timer":null}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        XCTAssertEqual(store.timeslips.count, 1)
+
+        transport.responsesByPathSubstring.insert(
+            (match: "/timeslips/42", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/42","project":"https://api.sandbox.freeagent.com/v2/projects/2","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"2.5","comment":"Reassigned","timer":null}}"#.utf8)),
+            at: 0
+        )
+
+        let updated = try await store.updateTimeslip(
+            id: "https://api.sandbox.freeagent.com/v2/timeslips/42",
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/2",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/2",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/2",
+            date: CalendarDay.day(from: "2026-08-11")!,
+            hours: 2.5,
+            comment: "Reassigned"
+        )
+
+        XCTAssertEqual(updated.taskId, "https://api.sandbox.freeagent.com/v2/tasks/2")
+        XCTAssertEqual(updated.hours, 2.5)
+        XCTAssertEqual(updated.comment, "Reassigned")
+        // Replaced in the local cache, not appended alongside the stale entry.
+        XCTAssertEqual(store.timeslips.count, 1)
+        XCTAssertEqual(store.timeslips[0], updated)
+
+        let putCall = transport.calls.last!
+        XCTAssertEqual(putCall.httpMethod, "PUT")
+        XCTAssertTrue(putCall.url!.absoluteString.contains("/timeslips/42"))
+        tokenStore.clear()
+    }
+
+    func test_updateTimeslip_onTheRunningEntry_updatesCurrentRunningTimeslipToo() async throws {
+        // "Switch task" edits a *running* timeslip's task in place (rather than stopping and
+        // starting a new one) so the timer keeps counting continuously — `currentRunningTimeslip`
+        // is a separate stored property from `timeslips`, so without this fix it would keep
+        // pointing at the pre-edit task/project/client until the next `refresh()`.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+            (match: "/timeslips/55", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/2","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        _ = try await store.startTimer(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+        )
+        XCTAssertEqual(store.currentRunningTimeslip?.taskId, "https://api.sandbox.freeagent.com/v2/tasks/1")
+
+        _ = try await store.updateTimeslip(
+            id: "https://api.sandbox.freeagent.com/v2/timeslips/55",
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/2",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/2",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/2",
+            date: CalendarDay.day(from: "2026-08-16")!,
+            hours: 2.0,
+            comment: nil
+        )
+
+        XCTAssertEqual(store.currentRunningTimeslip?.taskId, "https://api.sandbox.freeagent.com/v2/tasks/2")
+        XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
         tokenStore.clear()
     }
 

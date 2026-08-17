@@ -17,4 +17,17 @@ public enum DurationFormatter {
         guard total <= 24 else { return nil }
         return total
     }
+
+    /// The inverse of `parseHoursAndMinutes`, for prefilling a duration field from a stored
+    /// value (e.g. the edit-time-entry form) — round-trips through the same "H:MM" shape rather
+    /// than a decimal, so what the user sees matches what they'd type.
+    public static func hoursAndMinutes(_ hours: Double) -> String {
+        // Clamped to at least one minute whenever `hours` is positive: a duration under 30
+        // seconds rounds to 0 total minutes, which `parseHoursAndMinutes` rejects (it requires
+        // hours > 0 || minutes > 0) — round-tripping a real, if tiny, logged duration through
+        // this formatter must never produce text its own parser calls invalid.
+        let rounded = Int((hours * 60).rounded())
+        let totalMinutes = hours > 0 ? max(1, rounded) : rounded
+        return "\(totalMinutes / 60):" + String(format: "%02d", totalMinutes % 60)
+    }
 }

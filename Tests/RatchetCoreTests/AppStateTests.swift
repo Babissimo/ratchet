@@ -89,4 +89,48 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(state.screen, .tracking(task: sampleTask, startedAt: explicitStart))
     }
+
+    func test_retask_changesTrackingTaskButKeepsOriginalStartedAt() {
+        let explicitStart = Date(timeIntervalSince1970: 1_000_000_000)
+        let state = AppState(clock: { Date(timeIntervalSince1970: 9_999_999_999) })
+        state.logIn()
+        state.startTracking(sampleTask, startedAt: explicitStart)
+
+        let newTask = TrackedTaskRef(
+            clientId: "client-1", clientName: "Acme",
+            projectId: "proj-1", projectName: "Website Redesign",
+            taskId: "task-2", taskName: "Design"
+        )
+        state.retask(newTask)
+
+        // Same instant as before `retask` — "Switch task" edits a still-running timer in place,
+        // so the elapsed-time baseline must not jump to now.
+        XCTAssertEqual(state.screen, .tracking(task: newTask, startedAt: explicitStart))
+        XCTAssertEqual(state.mostRecent, newTask)
+    }
+
+    func test_retask_whileNotTracking_isANoOp() {
+        let state = AppState()
+        state.logIn()
+
+        state.retask(sampleTask)
+
+        XCTAssertEqual(state.screen, .idleNoHistory)
+    }
+
+    func test_retask_firesOnChange() {
+        let state = AppState()
+        state.logIn()
+        state.startTracking(sampleTask)
+        var changed = false
+        state.onChange = { changed = true }
+
+        state.retask(TrackedTaskRef(
+            clientId: "client-1", clientName: "Acme",
+            projectId: "proj-1", projectName: "Website Redesign",
+            taskId: "task-2", taskName: "Design"
+        ))
+
+        XCTAssertTrue(changed)
+    }
 }

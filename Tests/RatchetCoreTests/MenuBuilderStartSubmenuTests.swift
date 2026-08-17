@@ -8,9 +8,9 @@ import AppKit
 final class MenuBuilderStartSubmenuTests: XCTestCase {
     private func noopActions() -> MenuActions {
         MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
 
@@ -52,9 +52,9 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
     func test_clickingAddClient_invokesAddClientAction() {
         var addClientCalled = false
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: { addClientCalled = true }, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: { addClientCalled = true }, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildStartSubmenu(dataStore: FakeDataStore.seeded(), actions: actions)
         let addClientItem = menu.items[3] as! ClosureMenuItem
@@ -67,9 +67,9 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
     func test_clickingAddProject_invokesAddProjectActionWithClientId() {
         var addedClientId: String?
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { clientId in addedClientId = clientId }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { clientId in addedClientId = clientId }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildStartSubmenu(dataStore: FakeDataStore.seeded(), actions: actions)
         let projectsMenu = menu.items[0].submenu!
@@ -105,9 +105,9 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
     func test_clickingTask_startsTrackingWithFullRef() {
         var started: TrackedTaskRef?
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
-            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let store = FakeDataStore.seeded()
         let menu = MenuBuilder.buildStartSubmenu(dataStore: store, actions: actions)
@@ -127,10 +127,10 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
         var addedClientId: String?
         var addedProjectId: String?
         let actions = MenuActions(
-            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {},
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
             refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
             addTask: { clientId, projectId in addedClientId = clientId; addedProjectId = projectId },
-            addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, quit: {}
+            addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let store = FakeDataStore.seeded()
         let menu = MenuBuilder.buildStartSubmenu(dataStore: store, actions: actions)
