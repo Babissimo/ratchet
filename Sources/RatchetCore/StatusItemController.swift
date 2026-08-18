@@ -390,6 +390,7 @@ public final class StatusItemController {
         }
         lastRefreshedMenuItem = menu.item(withTitle: "Settings")?.submenu.flatMap(MenuBuilder.refreshItem(in:))
         updateIcon()
+        updateTooltip()
         updateTimer()
     }
 
@@ -537,6 +538,25 @@ public final class StatusItemController {
         }
     }
 
+    /// Hover text for the tray icon, shown before the menu is opened. Mirrors the open menu's
+    /// own top-to-bottom order — elapsed time, then task, then client/project — so hovering and
+    /// opening never disagree about what's running.
+    private static func tooltip(for screen: Screen, elapsedNow: Date) -> String? {
+        switch screen {
+        case .loggedOut:
+            return nil
+        case .idleNoHistory, .idle:
+            return "Idle"
+        case .tracking(let task, let startedAt):
+            let elapsed = ElapsedTimeFormatter.format(seconds: elapsedNow.timeIntervalSince(startedAt))
+            return "\(elapsed)\nTracking \(task.taskName)\n\(task.clientName) · \(task.projectName)"
+        }
+    }
+
+    private func updateTooltip() {
+        statusItem.button?.toolTip = Self.tooltip(for: appState.screen, elapsedNow: now())
+    }
+
     private func updateTimer() {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
@@ -548,6 +568,9 @@ public final class StatusItemController {
                     guard let self else { return }
                     guard case .tracking = self.appState.screen else { return }
                     self.elapsedMenuItem?.title = ElapsedTimeFormatter.format(seconds: Date().timeIntervalSince(startedAt))
+                    // The tooltip's own elapsed line needs the same per-second tick as the
+                    // menu row above — otherwise it goes stale the moment it's first shown.
+                    self.updateTooltip()
                 }
             }
             // Menus run the run loop in .eventTracking mode while open (the only time the

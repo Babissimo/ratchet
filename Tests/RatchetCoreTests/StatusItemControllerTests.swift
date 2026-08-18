@@ -42,6 +42,48 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Start timer")
     }
 
+    func test_tooltip_loggedOut_isNil() {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
+
+        XCTAssertNil(controller.statusItemForTesting.button?.toolTip)
+    }
+
+    func test_tooltip_idle_showsIdle() {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
+
+        appState.logIn()
+
+        XCTAssertEqual(controller.statusItemForTesting.button?.toolTip, "Idle")
+    }
+
+    func test_tooltip_tracking_showsElapsedTaskAndClientProject() {
+        let startedAt = Date(timeIntervalSince1970: 1_000_000)
+        let now = startedAt.addingTimeInterval(90) // 1 minute 30 seconds in
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = StatusItemController(appState: appState, dataStore: dataStore, now: { now })
+        self.controller = controller
+
+        appState.logIn()
+        let task = TrackedTaskRef(
+            clientId: "client-1", clientName: "Acme",
+            projectId: "proj-1", projectName: "Website Redesign",
+            taskId: "task-1", taskName: "Development"
+        )
+        appState.startTracking(task, startedAt: startedAt)
+
+        XCTAssertEqual(
+            controller.statusItemForTesting.button?.toolTip,
+            "0:01\nTracking Development\nAcme · Website Redesign"
+        )
+    }
+
     func test_menuWillOpen_refreshesWhenNeverRefreshed() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
