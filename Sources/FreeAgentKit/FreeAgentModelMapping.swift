@@ -70,7 +70,8 @@ extension FreeAgentTimeslipDTO {
             // rather than slipping back one west of UTC.
             date: timer?.startFrom ?? CalendarDay.day(from: datedOn) ?? Date(),
             hours: Double(hours) ?? 0,
-            comment: comment
+            comment: comment,
+            isInvoiced: billedOnInvoice != nil
         )
     }
 }

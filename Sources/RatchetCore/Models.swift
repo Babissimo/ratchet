@@ -170,8 +170,14 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
     public let date: Date
     public let hours: Double
     public let comment: String?
+    /// Whether FreeAgent has already billed this entry on an invoice. An invoiced entry is
+    /// closed on FreeAgent's side — "Recent time entries" shows it but can't offer to edit it.
+    public let isInvoiced: Bool
 
-    public init(id: String, clientId: String, projectId: String, taskId: String, date: Date, hours: Double, comment: String? = nil) {
+    public init(
+        id: String, clientId: String, projectId: String, taskId: String, date: Date, hours: Double,
+        comment: String? = nil, isInvoiced: Bool = false
+    ) {
         self.id = id
         self.clientId = clientId
         self.projectId = projectId
@@ -179,6 +185,7 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
         self.date = date
         self.hours = hours
         self.comment = comment
+        self.isInvoiced = isInvoiced
     }
 }
 

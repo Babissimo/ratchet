@@ -211,19 +211,49 @@ public enum MenuBuilder {
             .filter { $0.id != dataStore.currentRunningTimeslip?.id }
             .sorted { $0.date > $1.date }
             .prefix(20)
-        if recent.isEmpty {
-            menu.addItem(disabledItem("No time logged yet"))
-            return menu
+
+        menu.addItem(sectionHeaderItem("Unbilled"))
+        addTimeEntryItems(recent.filter { !$0.isInvoiced }, editable: true, to: menu, dataStore: dataStore, actions: actions)
+
+        menu.addItem(sectionHeaderItem("Invoiced"))
+        // FreeAgent closes an entry off once it's on an invoice, so unlike the unbilled section
+        // above these rows are shown for reference only — not `editTimeEntry` click targets.
+        addTimeEntryItems(recent.filter { $0.isInvoiced }, editable: false, to: menu, dataStore: dataStore, actions: actions)
+
+        return menu
+    }
+
+    private static func addTimeEntryItems(
+        _ entries: [RatchetTimeslip], editable: Bool, to menu: NSMenu, dataStore: DataStore, actions: MenuActions
+    ) {
+        if entries.isEmpty {
+            menu.addItem(disabledItem("(empty)"))
+            return
         }
-        for entry in recent {
+        for entry in entries {
             let path = path(for: entry, in: dataStore)
             let duration = ElapsedTimeFormatter.format(seconds: entry.hours * 3600)
             let dateText = CalendarDay.displayString(from: entry.date)
-            // Clickable rather than `disabledItem`: this is the only route to correcting a
-            // mis-logged entry short of leaving the app and editing it in FreeAgent's web UI.
-            menu.addItem(ClosureMenuItem(title: "\(path) · \(duration) · \(dateText)", handler: { actions.editTimeEntry(entry) }))
+            let title = "\(path) · \(duration) · \(dateText)"
+            if editable {
+                // Clickable rather than `disabledItem`: this is the only route to correcting a
+                // mis-logged entry short of leaving the app and editing it in FreeAgent's web UI.
+                menu.addItem(ClosureMenuItem(title: title, handler: { actions.editTimeEntry(entry) }))
+            } else {
+                menu.addItem(disabledItem(title))
+            }
         }
-        return menu
+    }
+
+    /// A non-interactive, visually distinct row labelling each half of "Recent time entries".
+    /// The system-styled section header (`NSMenuItem.sectionHeader`) only exists from macOS 14;
+    /// this app's deployment target is 13 (see `Package.swift`), so older systems fall back to a
+    /// plain disabled row with the same title.
+    private static func sectionHeaderItem(_ title: String) -> NSMenuItem {
+        if #available(macOS 14.0, *) {
+            return NSMenuItem.sectionHeader(title: title)
+        }
+        return disabledItem(title)
     }
 
     private static func path(for entry: RatchetTimeslip, in dataStore: DataStore) -> String {

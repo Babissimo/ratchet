@@ -127,11 +127,30 @@ public struct FreeAgentTimeslipDTO: Codable {
     public let hours: String
     public let comment: String?
     public let timer: FreeAgentTimerDTO?
+    /// URI of the invoice this timeslip has been billed on, if any — FreeAgent's only signal
+    /// that a timeslip is invoiced (there's no separate status field).
+    public let billedOnInvoice: String?
+
+    public init(
+        url: String, project: String, task: String, user: String, datedOn: String, hours: String,
+        comment: String?, timer: FreeAgentTimerDTO?, billedOnInvoice: String? = nil
+    ) {
+        self.url = url
+        self.project = project
+        self.task = task
+        self.user = user
+        self.datedOn = datedOn
+        self.hours = hours
+        self.comment = comment
+        self.timer = timer
+        self.billedOnInvoice = billedOnInvoice
+    }
 
     enum CodingKeys: String, CodingKey {
         case url, project, task, user
         case datedOn = "dated_on"
         case hours, comment, timer
+        case billedOnInvoice = "billed_on_invoice"
     }
 }
 

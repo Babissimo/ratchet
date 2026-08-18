@@ -388,7 +388,8 @@ public final class FreeAgentDataStore: DataStore {
         let mapped = dto.toRatchetTimeslip()
         return RatchetTimeslip(
             id: mapped.id, clientId: resolvedClientId, projectId: mapped.projectId,
-            taskId: mapped.taskId, date: mapped.date, hours: mapped.hours, comment: mapped.comment
+            taskId: mapped.taskId, date: mapped.date, hours: mapped.hours, comment: mapped.comment,
+            isInvoiced: mapped.isInvoiced
         )
     }
 

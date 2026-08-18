@@ -137,4 +137,33 @@ final class FreeAgentModelMappingTests: XCTestCase {
         XCTAssertEqual(timeslip.hours, 1.5)
         XCTAssertEqual(timeslip.comment, "worked on the thing")
     }
+
+    func test_timeslipDTO_withoutBilledOnInvoice_isNotInvoiced() {
+        let dto = FreeAgentTimeslipDTO(
+            url: "https://api.sandbox.freeagent.com/v2/timeslips/3",
+            project: "https://api.sandbox.freeagent.com/v2/projects/1",
+            task: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            user: "https://api.sandbox.freeagent.com/v2/users/1",
+            datedOn: "2023-11-14",
+            hours: "1.0",
+            comment: nil,
+            timer: nil
+        )
+        XCTAssertFalse(dto.toRatchetTimeslip().isInvoiced)
+    }
+
+    func test_timeslipDTO_withBilledOnInvoice_isInvoiced() {
+        let dto = FreeAgentTimeslipDTO(
+            url: "https://api.sandbox.freeagent.com/v2/timeslips/4",
+            project: "https://api.sandbox.freeagent.com/v2/projects/1",
+            task: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            user: "https://api.sandbox.freeagent.com/v2/users/1",
+            datedOn: "2023-11-14",
+            hours: "1.0",
+            comment: nil,
+            timer: nil,
+            billedOnInvoice: "https://api.sandbox.freeagent.com/v2/invoices/1"
+        )
+        XCTAssertTrue(dto.toRatchetTimeslip().isInvoiced)
+    }
 }
