@@ -147,6 +147,12 @@ that constraint; each item notes what it costs to skip signing.
   timeslip's `hours`, so it would otherwise show a stale, paused-at
   duration).
 
+- [ ] **Invoicing support.** FreeAgent's API supports creating invoices from
+  unbilled timeslips; the app currently only tracks time, with no way to
+  generate or send an invoice for it. Would need new `DataStore` methods
+  plus menu/UI to select a client/project's unbilled entries and invoice
+  them.
+
 ## Not blocking, revisit later
 
 - Code signing + notarization proper, if the $99/yr ever becomes worth it
