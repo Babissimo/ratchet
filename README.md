@@ -3,8 +3,13 @@
 A macOS menu-bar time tracker for FreeAgent. SwiftPM package, AppKit, no
 Xcode project.
 
-Click the tray icon to start and stop tracking against FreeAgent tasks and
-projects; the icon's rim and teeth turn green while a timer is running.
+Ratchet lives in the menu bar and lets you start and stop FreeAgent
+timeslips without opening a browser tab. Click the tray icon to see your
+FreeAgent tasks and projects, start tracking against one, and stop it again
+later; the icon's rim and teeth turn green while a timer is running, so you
+can tell at a glance whether the clock is going. It authenticates with your
+FreeAgent account via OAuth and talks to the FreeAgent API directly — there's
+no separate server or account of its own.
 
 ## Building
 
@@ -33,3 +38,9 @@ right-click (or Control-click) `Ratchet.app` in Finder, choose **Open**,
 then confirm **Open** again in the dialog that appears. You only need to do
 this once — subsequent launches (including via Spotlight or Dock) work
 normally.
+
+## License
+
+Copyright (C) 2026 Babissimo
+
+GPLv3 — see [LICENSE](LICENSE).

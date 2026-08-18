@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Sources/Ratchet/AppDelegate.swift
 import AppKit
 import RatchetCore

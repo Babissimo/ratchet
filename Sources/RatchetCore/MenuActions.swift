@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 public struct MenuActions {
     public let logIn: () -> Void
     public let logOut: () -> Void

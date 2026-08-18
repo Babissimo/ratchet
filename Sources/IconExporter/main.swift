@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Sources/IconExporter/main.swift
 //
 // Renders `RatchetIcon` to the PNG assets the app needs on disk: a macOS `.iconset` (which

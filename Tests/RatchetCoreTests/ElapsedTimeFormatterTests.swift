@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Tests/RatchetCoreTests/ElapsedTimeFormatterTests.swift
 import XCTest
 @testable import RatchetCore

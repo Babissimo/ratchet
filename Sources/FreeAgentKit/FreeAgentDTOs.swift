@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 
 /// FreeAgent isn't always consistent about whether a numeric-looking field comes back as a JSON

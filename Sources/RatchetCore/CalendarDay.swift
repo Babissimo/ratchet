@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 
 /// Conversions for FreeAgent's `dated_on`-style calendar dates ("2026-08-12").

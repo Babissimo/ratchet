@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 
 /// Adopted by errors that mean "the stored credentials are no longer usable" — i.e. the only

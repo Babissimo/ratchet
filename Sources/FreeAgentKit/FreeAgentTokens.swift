@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 
 /// `Sendable` because the shared token-refresh `Task` in `FreeAgentAPIClient` hands its result
