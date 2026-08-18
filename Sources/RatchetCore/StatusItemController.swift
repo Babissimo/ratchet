@@ -33,6 +33,12 @@ public final class StatusItemController {
     private let setLaunchAtLogin: SetLaunchAtLoginHandler
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
+    /// The Settings submenu's "Refresh projects & tasks" row, whose second line shows "Last
+    /// refreshed at …". Tracked the same way as `elapsedMenuItem` so `silentlyRefreshIfStale()`
+    /// can update this one row's title in place when its refresh completes while the menu is
+    /// open, rather than needing a full `rebuild()` (which is guarded out while open) — without
+    /// this, a menu-open-triggered refresh could never be reflected until the *next* open.
+    private weak var lastRefreshedMenuItem: NSMenuItem?
     private var isLoggingIn = false
     private var isChangingLaunchAtLogin = false
     private var isSilentlyRefreshing = false
@@ -381,6 +387,7 @@ public final class StatusItemController {
         } else {
             elapsedMenuItem = nil
         }
+        lastRefreshedMenuItem = menu.item(withTitle: "Settings")?.submenu.flatMap(MenuBuilder.refreshItem(in:))
         updateIcon()
         updateTimer()
     }
@@ -452,6 +459,12 @@ public final class StatusItemController {
         // not `lastRefreshedAt`, is what's current until the Task below completes).
         guard !isSilentlyRefreshing else { return }
         isSilentlyRefreshing = true
+        // Set synchronously, still on the call stack from `menuWillOpen`, so the row reads
+        // "Refreshing…" for the whole time this is in flight instead of showing the pre-refresh
+        // timestamp with no sign anything is happening. Disabled so it can't kick off a second
+        // refresh (or race the manual "Refresh projects & tasks" handler) while this one's live.
+        lastRefreshedMenuItem?.attributedTitle = MenuBuilder.refreshingAttributedTitle()
+        lastRefreshedMenuItem?.isEnabled = false
         Task { @MainActor in
             defer { self.isSilentlyRefreshing = false }
             do {
@@ -461,14 +474,27 @@ public final class StatusItemController {
                 // refresh succeeds.
                 self.restoreRunningTimer()
                 // A menu open in progress must not have its live elapsed-time line yanked out
-                // from under it — see the guard inside `rebuild()`.
+                // from under it — see the guard inside `rebuild()`. But this row isn't
+                // menu-instance-dependent the way `elapsedMenuItem` is, so it's updated in place
+                // here even while `isMenuOpen`, rather than leaving it stuck on
+                // "Refreshing…"/disabled until the next open's catch-up `rebuild()`.
+                self.lastRefreshedMenuItem?.attributedTitle = MenuBuilder.refreshItemAttributedTitle(
+                    lastRefreshedAt: self.dataStore.lastRefreshedAt
+                )
+                self.lastRefreshedMenuItem?.isEnabled = true
                 self.rebuild()
             } catch where error.indicatesSessionExpired {
                 self.handleSessionExpired()
             } catch {
                 // A background refresh failing (e.g. no network) isn't worth interrupting the
                 // user over — same reasoning as AppDelegate's launch-time refresh. The next
-                // menu open or wake just tries again.
+                // menu open or wake just tries again. Still needs to leave the row usable again
+                // rather than stuck on "Refreshing…"/disabled — `dataStore.lastRefreshedAt` is
+                // unchanged, so this reverts to exactly what it showed before this attempt.
+                self.lastRefreshedMenuItem?.attributedTitle = MenuBuilder.refreshItemAttributedTitle(
+                    lastRefreshedAt: self.dataStore.lastRefreshedAt
+                )
+                self.lastRefreshedMenuItem?.isEnabled = true
             }
         }
     }

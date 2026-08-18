@@ -18,15 +18,20 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         let state = AppState()
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: state, actions: noopActions())
 
+        // The refresh row's `.title` isn't the plain "Refresh projects & tasks" — assigning
+        // `attributedTitle` (its two-line "title\nsubtitle" display) rewrites `.title` to that
+        // string's full contents, which is why `StatusItemController` looks this row up by `.tag`
+        // (`MenuBuilder.refreshItemTag`) rather than by title.
         XCTAssertEqual(menu.items.map(\.title), [
             "al@example.com",
-            "Refresh projects & tasks",
+            "Refresh projects & tasks\nNever refreshed",
             "Launch at login",
             "",
             "Open FreeAgent",
             "",
             "Log out",
         ])
+        XCTAssertEqual(menu.items[1].tag, MenuBuilder.refreshItemTag)
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[3].isSeparatorItem)
         XCTAssertTrue(menu.items[5].isSeparatorItem)

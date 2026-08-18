@@ -237,12 +237,12 @@ public enum MenuBuilder {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.addItem(disabledItem(dataStore.accountEmail))
-        let refreshTitle = "Refresh projects & tasks"
-        let refreshItem = ClosureMenuItem(title: refreshTitle, handler: actions.refresh)
-        refreshItem.attributedTitle = twoLineAttributedTitle(
-            firstLine: refreshTitle,
-            secondLine: lastRefreshedSubtitle(dataStore.lastRefreshedAt)
-        )
+        let refreshItem = ClosureMenuItem(title: refreshItemTitle, handler: actions.refresh)
+        refreshItem.attributedTitle = refreshItemAttributedTitle(lastRefreshedAt: dataStore.lastRefreshedAt)
+        // Assigning `attributedTitle` also rewrites the plain `.title` to that string's full
+        // (two-line) contents, so `StatusItemController` can't find this item again by matching
+        // `.title` against `refreshItemTitle` — it uses this tag instead.
+        refreshItem.tag = refreshItemTag
         menu.addItem(refreshItem)
         let launchItem = ClosureMenuItem(title: "Launch at login", handler: actions.toggleLaunchAtLogin)
         launchItem.state = state.launchAtLoginEnabled ? .on : .off
@@ -288,6 +288,35 @@ public enum MenuBuilder {
             ]
         ))
         return result
+    }
+
+    /// The Settings submenu's "Refresh projects & tasks" row title, used as its initial `.title`.
+    static let refreshItemTitle = "Refresh projects & tasks"
+
+    /// Tags the refresh row so `StatusItemController` can find it again after `attributedTitle`
+    /// has overwritten `.title` with the two-line text — see the comment at the assignment site.
+    static let refreshItemTag = 1
+
+    /// The Settings submenu's "Refresh projects & tasks" row, so `StatusItemController` can find
+    /// it again to update it in place. Not `.title`, which `attributedTitle` overwrites.
+    static func refreshItem(in settingsSubmenu: NSMenu) -> NSMenuItem? {
+        settingsSubmenu.items.first(where: { $0.tag == refreshItemTag })
+    }
+
+    /// Rebuilds just the two-line attributed title for the refresh row, so
+    /// `StatusItemController.silentlyRefreshIfStale()` can update that row's "Last refreshed at"
+    /// line in place — via `NSMenuItem.attributedTitle`, mirroring how `elapsedMenuItem` updates
+    /// its `.title` live — without a full menu `rebuild()`, which is guarded out while the menu
+    /// is open.
+    static func refreshItemAttributedTitle(lastRefreshedAt: Date?) -> NSAttributedString {
+        twoLineAttributedTitle(firstLine: refreshItemTitle, secondLine: lastRefreshedSubtitle(lastRefreshedAt))
+    }
+
+    /// Shown on the refresh row for the (usually sub-second, but real) network round-trip a
+    /// silent refresh takes — without this, the row keeps showing the pre-refresh timestamp with
+    /// no sign anything is happening, which reads as if the menu-open/wake refresh never fired.
+    static func refreshingAttributedTitle() -> NSAttributedString {
+        twoLineAttributedTitle(firstLine: refreshItemTitle, secondLine: "Refreshing…")
     }
 
     private static func lastRefreshedSubtitle(_ lastRefreshedAt: Date?) -> String {
