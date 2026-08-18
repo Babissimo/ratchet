@@ -132,6 +132,22 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
     }
 
+    func test_menuWillOpen_whenLoggedOut_doesNotRefresh() async {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
+        // No appState.logIn() — dataStore.lastRefreshedAt is nil, which the staleness gate would
+        // otherwise treat as "stale" and refresh anyway, throwing .unauthorized and triggering a
+        // false "session expired" alert for someone who simply never logged in.
+
+        let menu = controller.statusItemForTesting.menu!
+        menu.delegate?.menuWillOpen?(menu)
+        await drainMainActorQueue()
+
+        XCTAssertEqual(dataStore.refreshCount, 0)
+    }
+
     func test_systemWake_refreshesWhenStale() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
@@ -163,6 +179,36 @@ final class StatusItemControllerTests: XCTestCase {
         await drainMainActorQueue()
 
         XCTAssertEqual(dataStore.refreshCount, 1, "a refresh 0s ago is well within the 2-minute staleness threshold")
+    }
+
+    func test_systemWake_refreshFailure_isSilent() async {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        dataStore.refreshError = DataStoreError.notFound
+        let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
+        appState.logIn()
+
+        // Must not crash and must not present a modal alert — same reasoning as
+        // test_menuWillOpen_refreshFailure_isSilent above.
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        await drainMainActorQueue()
+
+        XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Start timer")
+    }
+
+    func test_systemWake_sessionExpired_logsOut() async {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        dataStore.refreshError = FakeSessionExpiredError()
+        let controller = StatusItemController(appState: appState, dataStore: dataStore)
+        self.controller = controller
+        appState.logIn()
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        await drainMainActorQueue()
+
+        XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
     }
 
     /// Fire-and-forget `Task { @MainActor in ... }` work (like `silentlyRefreshIfStale()`) needs

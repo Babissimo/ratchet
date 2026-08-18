@@ -35,9 +35,15 @@ public final class StatusItemController {
     private weak var elapsedMenuItem: NSMenuItem?
     private var isLoggingIn = false
     private var isChangingLaunchAtLogin = false
+    private var isSilentlyRefreshing = false
     private let now: () -> Date
     private var appearanceObservation: NSKeyValueObservation?
     private var wakeObserver: NSObjectProtocol?
+    /// True while the status item's menu is open on screen. A `rebuild()` while this is true
+    /// would repoint `elapsedMenuItem` at a menu instance nobody's looking at, freezing the
+    /// displayed menu's live elapsed-time line for the rest of that open session — see the guard
+    /// in `rebuild()`.
+    private var isMenuOpen = false
 
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
     public var statusItemForTesting: NSStatusItem { statusItem }
@@ -81,11 +87,17 @@ public final class StatusItemController {
         // `silentlyRefreshIfStale()` threshold as the menu-open trigger, so rapid sleep/wake
         // (e.g. lid flutter) doesn't fire repeated requests.
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
         ) { [weak self] _ in
-            // NSWorkspace.notificationCenter with queue: .main delivers on the main thread;
-            // this mirrors the `MainActor.assumeIsolated` justification already used for the
-            // appearance observation.
+            // queue: nil makes NotificationCenter invoke this block synchronously on the
+            // posting thread rather than asynchronously via OperationQueue.main — and
+            // NSWorkspace.didWakeNotification is posted on the main thread, so this always runs
+            // there. (queue: .main would instead hop through OperationQueue.main, making
+            // delivery asynchronous relative to the post — indistinguishable in the running app,
+            // but it made tests posting this notification directly unable to rely on a fixed
+            // number of drain yields.) This mirrors the `MainActor.assumeIsolated` justification
+            // already used for the appearance observation: the closure type itself isn't
+            // statically MainActor-isolated, but the runtime guarantees main-thread delivery.
             MainActor.assumeIsolated {
                 self?.silentlyRefreshIfStale()
             }
@@ -263,6 +275,12 @@ public final class StatusItemController {
     /// Exposed so `AppDelegate`'s launch-time restore can route an `.unauthorized` here rather
     /// than swallowing it and leaving a logged-in-looking, permanently empty menu.
     public func handleSessionExpired() {
+        // Unlike a routine silent-refresh success, this is already maximally disruptive — a
+        // modal alert is about to steal focus and force the user out of whatever they were
+        // doing. There's no "next open" to defer to here (and the modal makes the still-open
+        // native menu moot regardless), so this bypasses `rebuild()`'s isMenuOpen guard rather
+        // than leaving the menu showing stale logged-in content behind/under the alert.
+        isMenuOpen = false
         performLogOut()
         rebuild()
         let alert = NSAlert()
@@ -344,6 +362,16 @@ public final class StatusItemController {
     }
 
     private func rebuild() {
+        // While the menu is open, the *displayed* menu is the existing NSMenu instance — handing
+        // it a freshly built replacement here would repoint `elapsedMenuItem` at a menu nobody's
+        // looking at, and the live elapsed-time line would silently stop updating for the rest of
+        // that open session (see `updateTimer()`). Skip the whole rebuild rather than guard just
+        // `statusItem.menu`, since `restoreRunningTimer()` can itself trigger a further `rebuild()`
+        // via `appState.onChange` — this one guard covers every rebuild source while open. The
+        // next open is unaffected: `menuDidClose` below runs a catch-up `rebuild()` the moment
+        // the menu closes, once `isMenuOpen` is false again, so by the time the user reopens it
+        // the menu already reflects everything a skipped rebuild would have shown.
+        guard !isMenuOpen else { return }
         let menu = MenuBuilder.build(state: appState, dataStore: dataStore, actions: actions)
         menu.delegate = menuOpenDelegate
         statusItem.menu = menu
@@ -357,26 +385,44 @@ public final class StatusItemController {
         updateTimer()
     }
 
-    /// `NSMenu.delegate` is an Objective-C protocol, so forwarding `menuWillOpen` needs an
-    /// `NSObject`-rooted type — `StatusItemController` itself stays a plain Swift class rather
-    /// than picking up `NSObject` for this alone. `NSMenu.delegate` is unowned, so this must be
-    /// held strongly somewhere for the menu's lifetime; `rebuild()` assigns it to every freshly
-    /// built menu.
+    /// `NSMenu.delegate` is an Objective-C protocol, so forwarding `menuWillOpen`/`menuDidClose`
+    /// needs an `NSObject`-rooted type — `StatusItemController` itself stays a plain Swift class
+    /// rather than picking up `NSObject` for this alone. `NSMenu.delegate` is `weak`, so this
+    /// must be held strongly somewhere for the menu's lifetime; `rebuild()` assigns it to every
+    /// freshly built menu.
     private final class MenuOpenDelegate: NSObject, NSMenuDelegate {
         private let onOpen: () -> Void
+        private let onClose: () -> Void
 
-        init(onOpen: @escaping () -> Void) {
+        init(onOpen: @escaping () -> Void, onClose: @escaping () -> Void) {
             self.onOpen = onOpen
+            self.onClose = onClose
         }
 
         func menuWillOpen(_ menu: NSMenu) {
             onOpen()
         }
+
+        func menuDidClose(_ menu: NSMenu) {
+            onClose()
+        }
     }
 
-    private lazy var menuOpenDelegate = MenuOpenDelegate { [weak self] in
-        self?.silentlyRefreshIfStale()
-    }
+    private lazy var menuOpenDelegate = MenuOpenDelegate(
+        onOpen: { [weak self] in
+            guard let self else { return }
+            self.isMenuOpen = true
+            self.silentlyRefreshIfStale()
+        },
+        onClose: { [weak self] in
+            guard let self else { return }
+            self.isMenuOpen = false
+            // Catches up on any rebuild that was skipped by `rebuild()`'s `isMenuOpen` guard
+            // while this menu was open (e.g. a silent refresh completing mid-session), so the
+            // next time the user opens the menu it's already showing fresh data.
+            self.rebuild()
+        }
+    )
 
     /// Two minutes: long enough that opening the menu twice in quick succession, or a rapid
     /// sleep/wake, doesn't fire a second network round-trip; short enough that data is never
@@ -390,17 +436,32 @@ public final class StatusItemController {
     /// data. The manual "Refresh projects & tasks" item bypasses this entirely by calling
     /// `dataStore.refresh()` directly, so it's never subject to this gate.
     private func silentlyRefreshIfStale() {
+        // No session means nothing to silently refresh — without this, a logged-out
+        // `dataStore.lastRefreshedAt` (nil, since it's never been fetched) reads as "stale" and
+        // falls through to `dataStore.refresh()`, which throws `.unauthorized` for a simple
+        // never-logged-in state exactly as it would for a dead session, triggering the "your
+        // session expired" alert on every menu open and wake. Mirrors `AppDelegate`'s
+        // `if tokenStore.load() != nil` guard on the launch-time refresh, same reasoning.
+        guard appState.isLoggedIn else { return }
         if let lastRefreshedAt = dataStore.lastRefreshedAt,
            now().timeIntervalSince(lastRefreshedAt) < Self.staleRefreshThreshold {
             return
         }
+        // Guards against the ordinary "wake, then immediately open the menu" sequence starting a
+        // second concurrent refresh while the wake-triggered one is still in flight (this flag,
+        // not `lastRefreshedAt`, is what's current until the Task below completes).
+        guard !isSilentlyRefreshing else { return }
+        isSilentlyRefreshing = true
         Task { @MainActor in
+            defer { self.isSilentlyRefreshing = false }
             do {
                 try await self.dataStore.refresh()
                 // Same adoption the manual refresh and launch/login paths do — without this, a
                 // timer started or stopped elsewhere wouldn't show up even after this silent
                 // refresh succeeds.
                 self.restoreRunningTimer()
+                // A menu open in progress must not have its live elapsed-time line yanked out
+                // from under it — see the guard inside `rebuild()`.
                 self.rebuild()
             } catch where error.indicatesSessionExpired {
                 self.handleSessionExpired()
