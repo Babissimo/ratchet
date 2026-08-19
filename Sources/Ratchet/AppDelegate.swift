@@ -115,7 +115,17 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
           let client = dataStore.clients.first(where: { $0.id == running.clientId }),
           let project = client.projects.first(where: { $0.id == running.projectId }),
           let task = project.tasks.first(where: { $0.id == running.taskId })
-    else { return }
+    else {
+        // The server has nothing running (or it names a client/project/task local state can't
+        // resolve) — if `appState` still shows tracking, that's now stale. Without this, a
+        // timer that stopped elsewhere (or was never actually started server-side to begin
+        // with) left the menu showing "tracking" forever; neither a manual Refresh nor the
+        // wake/menu-open silent refresh could ever bring it back to idle.
+        if appState.trackingTask != nil {
+            appState.stopTracking()
+        }
+        return
+    }
     let ref = TrackedTaskRef(
         clientId: client.id, clientName: client.name,
         projectId: project.id, projectName: project.name,

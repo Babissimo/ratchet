@@ -111,12 +111,13 @@ public final class FreeAgentDataStore: DataStore {
         // timer for the same task after the day rolled over (app restart, some other code path
         // re-invoking start) found nothing "for today" and created a second, duplicate timeslip
         // while the original kept running server-side.
-        let running: RatchetTimeslip?
-        if let cached = currentRunningTimeslip {
-            running = cached
-        } else {
-            running = try await fetchRunningTimeslip()
-        }
+        //
+        // Always re-fetched from the server rather than trusting a cached `currentRunningTimeslip`
+        // — the cache can outlive the timeslip it names (stopped from the FreeAgent web app,
+        // another device, or simply yesterday's timer having ended). Trusting it here meant the
+        // same-task branch below returned "success" without a single network call: the menu
+        // showed tracking while FreeAgent was never told anything.
+        let running = try await fetchRunningTimeslip()
         if let running {
             if running.taskId == taskId {
                 // Already running for exactly the task being requested — resume it rather than

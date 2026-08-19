@@ -135,6 +135,62 @@ final class FreeAgentDataStoreTests: XCTestCase {
         tokenStore.clear()
     }
 
+    func test_startTimer_reVerifiesWithServerRatherThanTrustingACachedRunningTimeslip() async throws {
+        // The bug this guards against: once `currentRunningTimeslip` was populated (by an
+        // earlier startTimer call, or by refresh()), a later startTimer for the *same* task
+        // trusted that cached entry outright and skipped the running-check network call
+        // entirely. If the cached timeslip had since stopped running server-side — e.g. it was
+        // yesterday's, and the day rolled over while nothing re-synced — the caller got back a
+        // "success" without FreeAgent ever being contacted: the menu showed tracking locally
+        // while nothing was running remotely. startTimer must re-verify with the server every
+        // time, not just when the cache is empty.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-18","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-18T23:30:00Z"}}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+
+        _ = try await store.startTimer(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+        )
+        XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/55")
+
+        // Yesterday's timer has since stopped server-side, so the running-check now reports
+        // nothing running — but the cache still holds yesterday's now-stale entry. Inserted at
+        // 0 so `first(where:)` prefers it over the original "view=running" stub above.
+        transport.responsesByPathSubstring.insert(
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)), at: 0
+        )
+        transport.responsesByPathSubstring.append(
+            (match: "task=", status: 200, body: Data(#"{"timeslips":[]}"#.utf8))
+        )
+        transport.responsesByPathSubstring.append(
+            (match: "/timeslips/99/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-19","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-19T09:00:00Z"}}}"#.utf8))
+        )
+        transport.responsesByPathSubstring.append(
+            (match: "timeslips", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-19","hours":"0.0","comment":null,"timer":null}}"#.utf8))
+        )
+
+        let result = try await store.startTimer(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+        )
+
+        // A brand-new timeslip for today, not a silent resume of the stale cached one.
+        XCTAssertEqual(result.id, "https://api.sandbox.freeagent.com/v2/timeslips/99")
+        XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/99")
+        // First startTimer: 1 call. Second startTimer: running-check + today-search +
+        // create-POST + timer-start = 4 more calls.
+        XCTAssertEqual(transport.calls.count, 5)
+        XCTAssertTrue(transport.calls[1].url!.absoluteString.contains("view=running"))
+        XCTAssertTrue(transport.calls.last!.url!.absoluteString.contains("/timeslips/99/timer"))
+        XCTAssertEqual(transport.calls.last!.httpMethod, "POST")
+        tokenStore.clear()
+    }
+
     func test_startTimer_throwsWhenAnotherTaskIsAlreadyRunning() async throws {
         // The app enforces single-timer-at-a-time in the UI (the tracking screen's menu offers
         // only "Stop", never another "Start"), so a running timeslip for a *different* task here
