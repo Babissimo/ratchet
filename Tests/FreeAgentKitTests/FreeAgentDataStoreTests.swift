@@ -536,4 +536,37 @@ final class FreeAgentDataStoreTests: XCTestCase {
 
         XCTAssertNil(store.currentRunningTimeslip, "the stale in-flight refresh must not resurrect the stopped timer")
     }
+
+    func test_stopTimer_stopsWhatIsActuallyRunningNotWhatWasCached() async throws {
+        // Cache says 100; the server says 200 is running (100 was stopped from the web app and a
+        // new one started). Trusting the cache stopped an already-stopped timeslip, reported
+        // success, and left 200 billing with the menu showing idle.
+        let today = CalendarDay.dayString(from: Date())
+        func body(_ id: Int, _ start: String) -> String {
+            #"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/\#(id)","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"\#(start)"},"billed_on_invoice":null}"#
+        }
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[\#(body(100, "2026-08-19T09:00:00Z"))]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "timeslips/", status: 200, body: Data("{}".utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/100")
+
+        transport.responsesByPathSubstring[2] = (match: "view=running", status: 200, body: Data(#"{"timeslips":[\#(body(200, "2026-08-19T11:00:00Z"))]}"#.utf8))
+        transport.calls = []
+        let stopped = try await store.stopTimer()
+
+        XCTAssertEqual(stopped?.id, "https://api.sandbox.freeagent.com/v2/timeslips/200")
+        let deletes = transport.calls.filter { $0.httpMethod == "DELETE" }.map { $0.url!.absoluteString }
+        XCTAssertEqual(deletes, ["https://api.sandbox.freeagent.com/v2/timeslips/200/timer"])
+    }
 }

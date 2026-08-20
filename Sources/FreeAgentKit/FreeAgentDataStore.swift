@@ -248,23 +248,21 @@ public final class FreeAgentDataStore: DataStore {
     public func stopTimer() async throws -> RatchetTimeslip? {
         beginMutation()
         defer { mutationEpoch &+= 1 }
-        // Falling straight through to `return nil` on an empty cache was a silent failure with
-        // real money attached: the caller discards the result and drops the UI to idle either
-        // way, so a timer the cache had lost (a refresh that raced the running-view query, a
-        // timer started from the FreeAgent web app) kept running server-side and accrued
-        // billable hours with nothing in the menu to suggest it. Ask the server before believing
-        // there's nothing to stop.
-        let running: RatchetTimeslip
-        if let cached = currentRunningTimeslip {
-            running = cached
-        } else if let found = try await fetchRunningTimeslip() {
-            running = found
-        } else {
+        // Always the server, never the cache. The old code only queried when the cache was
+        // empty — but a cache naming the *wrong* timeslip is the dangerous case, not the
+        // absent one: it DELETEd a timer that had already been stopped elsewhere, reported
+        // success, and left the timer that was genuinely running to bill on unnoticed.
+        guard let running = try await fetchRunningTimeslip() else {
+            currentRunningTimeslip = nil
             return nil
         }
         try await apiClient.delete("\(running.id)/timer")
         currentRunningTimeslip = nil
         return running
+    }
+
+    public func runningTimeslip() async throws -> RatchetTimeslip? {
+        try await fetchRunningTimeslip()
     }
 
     /// The authoritative "is anything running for this user" query, shared by `refresh()` and

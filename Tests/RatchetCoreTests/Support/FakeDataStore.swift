@@ -286,4 +286,11 @@ final class FakeDataStore: DataStore {
         self.runningTimeslipId = nil
         return timeslips[index]
     }
+
+    /// The fake has no server behind it, so its cache *is* the truth — but the method must
+    /// exist for the protocol, and tests that want a drifted cache can seed one via
+    /// `seedTimeslips(_:runningId:)`.
+    func runningTimeslip() async throws -> RatchetTimeslip? {
+        currentRunningTimeslip
+    }
 }

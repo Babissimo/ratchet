@@ -21,6 +21,12 @@ public protocol DataStore: AnyObject {
     /// known (e.g. before the first successful `refresh()`).
     var webAppURL: URL? { get }
 
+    /// The authoritative "what is running right now", read from the server. `currentRunningTimeslip`
+    /// above is a cache and can name a timeslip that was stopped from the FreeAgent web app,
+    /// another device, or simply yesterday — anything about to *write* to the running timeslip
+    /// must go through this instead.
+    func runningTimeslip() async throws -> RatchetTimeslip?
+
     func addTask(
         name: String,
         projectId: String,
