@@ -3,9 +3,17 @@ import Foundation
 
 /// Thrown by `decodeEnveloped` when the response's top-level key doesn't match what was expected
 /// (e.g. requesting `envelopeKey: "user"` but the server returned some other top-level key).
-private struct MissingEnvelopeKey: Error, CustomStringConvertible {
+///
+/// `LocalizedError` conformance matters here, not just `CustomStringConvertible`: this reaches
+/// the user through `FreeAgentError.decoding`'s description, which reads `error.localizedDescription`
+/// — and for a plain struct that only conforms to `Error`, that bridges through `NSError` to a
+/// generic "The operation couldn't be completed" wrapper, discarding this type's own message.
+/// `errorDescription` is what `localizedDescription` actually consults before falling back to
+/// that bridge, so mirroring `description` into it is what makes the real text show up.
+private struct MissingEnvelopeKey: Error, CustomStringConvertible, LocalizedError {
     let envelopeKey: String
     var description: String { "expected top-level key \"\(envelopeKey)\" in the response" }
+    var errorDescription: String? { description }
 }
 
 /// Abstraction over "send an HTTP request, get back a response" so tests

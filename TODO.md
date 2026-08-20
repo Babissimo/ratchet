@@ -152,7 +152,7 @@ that constraint; each item notes what it costs to skip signing.
   generate or send an invoice for it. Would need new `DataStore` methods
   plus menu/UI to select a client/project's unbilled entries and invoice
   them.
-- **Duplicate timeslips when a create response is lost.** If the network drops after FreeAgent
+- [ ] **Duplicate timeslips when a create response is lost.** If the network drops after FreeAgent
   processes `POST /timeslips` but before the response arrives, the entry exists server-side with
   no local record, and retrying "Log past time" creates a second one. `startTimer` self-heals
   (its next call re-queries the running view and adopts what it finds); `logTime` has no
