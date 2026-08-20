@@ -18,11 +18,60 @@ private final class StubTransport: FreeAgentTransport {
     }
 }
 
+/// A `StubTransport` that can hold the first request matching `gateMatch` open until released,
+/// so a test can interleave a user action with a refresh that is still in flight.
+@MainActor
+private final class GatedStubTransport: FreeAgentTransport {
+    var responsesByPathSubstring: [(match: String, status: Int, body: Data)] = []
+    private let gateMatch: String
+    private var armed = false
+    private var gateHit = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(gateMatch: String) { self.gateMatch = gateMatch }
+
+    func arm() { armed = true }
+
+    func release() {
+        let pending = waiting
+        waiting = []
+        pending.forEach { $0.resume() }
+    }
+
+    func waitForGate() async {
+        for _ in 0..<2000 {
+            if gateHit { return }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+    }
+
+    /// Registers the continuation synchronously on the main actor, so `release()` can never run
+    /// before the waiter has been recorded — that ordering hole deadlocks the test.
+    private func waitIfGated(_ url: String) async {
+        guard armed, url.contains(gateMatch), !gateHit else { return }
+        gateHit = true
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiting.append(continuation)
+        }
+    }
+
+    nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let url = request.url!.absoluteString
+        await waitIfGated(url)
+        return try await MainActor.run {
+            guard let entry = responsesByPathSubstring.first(where: { url.contains($0.match) }) else {
+                fatalError("No stubbed response matches \(url)")
+            }
+            return (entry.body, HTTPURLResponse(url: request.url!, statusCode: entry.status, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+}
+
 // Exercises @MainActor-isolated types (see DataStore's isolation), so the whole case is pinned
 // to the main actor rather than annotating every test method.
 @MainActor
 final class FreeAgentDataStoreTests: XCTestCase {
-    private func makeStore(transport: StubTransport) -> (FreeAgentDataStore, KeychainTokenStore) {
+    private func makeStore(transport: any FreeAgentTransport) -> (FreeAgentDataStore, KeychainTokenStore) {
         let tokenStore = KeychainTokenStore(service: "com.ratchet.freeagent.test.\(UUID().uuidString)")
         tokenStore.save(FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: 3600)))
         let apiClient = FreeAgentAPIClient(environment: .sandbox, tokenStore: tokenStore, transport: transport)
@@ -436,5 +485,39 @@ final class FreeAgentDataStoreTests: XCTestCase {
         XCTAssertEqual(store.timeslips.count, 1)
         XCTAssertNotNil(store.currentRunningTimeslip)
         XCTAssertEqual(store.lastRefreshedAt, firstRefreshAt, "a failed refresh must not stamp lastRefreshedAt")
+    }
+
+    func test_refresh_doesNotResurrectATimerStoppedWhileItWasInFlight() async throws {
+        // The interleaving is the ordinary one: menuWillOpen fires a silent refresh, the user
+        // clicks "Stop tracking" a second later, and the refresh's already-computed answer
+        // ("timeslip 9 is running") lands afterwards. Before the epoch guard that answer won,
+        // and the menu showed a green tray and a climbing clock for a stopped timer.
+        let today = CalendarDay.dayString(from: Date())
+        let runningBody = #"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/9","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-19T09:00:00Z"},"billed_on_invoice":null}"#
+        let transport = GatedStubTransport(gateMatch: "view=running")
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
+            (match: "timeslips/9/timer", status: 200, body: Data("{}".utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        XCTAssertNotNil(store.currentRunningTimeslip)
+
+        transport.arm()
+        let inFlight = Task { @MainActor in try? await store.refresh() }
+        await transport.waitForGate()
+        _ = try await store.stopTimer()
+        XCTAssertNil(store.currentRunningTimeslip)
+        transport.release()
+        _ = await inFlight.value
+
+        XCTAssertNil(store.currentRunningTimeslip, "the stale in-flight refresh must not resurrect the stopped timer")
     }
 }

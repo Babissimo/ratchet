@@ -25,6 +25,20 @@ public final class FreeAgentDataStore: DataStore {
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
     private var currentUserURL: String = ""
+    /// Bumped on entry to every method that changes server-side state. `refresh()` snapshots it
+    /// before its first request and abandons its commit if the value moved, because a refresh's
+    /// responses describe the world as of when the server answered them — which, for a request
+    /// still in flight when the user starts or stops a timer, is the world *before* that action.
+    /// Committing them anyway reinstated it: a stopped timer came back as "tracking" (green
+    /// tray, climbing clock, and a Stop that then DELETEs a dead timer), and a just-started one
+    /// vanished to idle while FreeAgent went on billing.
+    private var mutationEpoch: UInt64 = 0
+
+    /// Called at the *start* of each mutating method, not the end — a refresh whose responses
+    /// were computed while a mutation was mid-flight is just as stale as one that predates it.
+    private func beginMutation() {
+        mutationEpoch &+= 1
+    }
 
     public init(apiClient: FreeAgentAPIClient, environment: FreeAgentEnvironment, clock: @escaping () -> Date = Date.init) {
         self.apiClient = apiClient
@@ -33,6 +47,7 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func refresh() async throws {
+        let epoch = mutationEpoch
         // Everything below is built into locals and assigned in the single commit block at the
         // end. The previous shape assigned as it went, so a failure partway through left the
         // store half-new: `clients` replaced while `timeslips` and `currentRunningTimeslip`
@@ -95,6 +110,11 @@ public final class FreeAgentDataStore: DataStore {
         let newTimeslips = recentDTOs.map { resolvedTimeslip($0, using: newProjectToClientId) }.sorted { $0.day < $1.day }
         let newRunning = runningDTO.map { resolvedTimeslip($0, using: newProjectToClientId) }
 
+        // A mutation landed while these responses were in flight, so they describe a superseded
+        // world. Drop them — and deliberately don't stamp `lastRefreshedAt`, so the next menu
+        // open or wake treats the data as stale and fetches again.
+        guard mutationEpoch == epoch else { return }
+
         // Single commit point: no `await` between here and the end of the function, so no other
         // main-actor work can observe a half-applied refresh.
         accountEmail = user.email
@@ -108,6 +128,7 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        beginMutation()
         // Ask the server first, same as stopTimer()'s fallback: the today-scoped "existing
         // timeslip for this task" query below only finds a timeslip *created* today, not one
         // still running from before midnight — FreeAgent doesn't re-date a timeslip's
@@ -208,6 +229,7 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func stopTimer() async throws -> RatchetTimeslip? {
+        beginMutation()
         // Falling straight through to `return nil` on an empty cache was a silent failure with
         // real money attached: the caller discards the result and drops the UI to idle either
         // way, so a timer the cache had lost (a refresh that raced the running-view query, a
@@ -251,6 +273,7 @@ public final class FreeAgentDataStore: DataStore {
         email: String?, phoneNumber: String?, address1: String?,
         town: String?, postcode: String?, country: String?
     ) async throws -> RatchetClient {
+        beginMutation()
         struct CreateContactBody: Encodable {
             let organisation_name: String?
             let first_name: String?
@@ -282,6 +305,7 @@ public final class FreeAgentDataStore: DataStore {
         usesProjectInvoiceSequence: Bool, contractPoReference: String?,
         startsOn: Date?, endsOn: Date?
     ) async throws -> RatchetProject {
+        beginMutation()
         struct CreateProjectBody: Encodable {
             let contact: String
             let name: String
@@ -319,6 +343,7 @@ public final class FreeAgentDataStore: DataStore {
         name: String, projectId: String, clientId: String, isBillable: Bool,
         status: TaskStatus, billingRate: Double?, billingPeriod: BillingPeriod?
     ) async throws -> RatchetTask {
+        beginMutation()
         struct CreateTaskBody: Encodable {
             let name: String
             let is_billable: Bool
@@ -345,6 +370,7 @@ public final class FreeAgentDataStore: DataStore {
     public func logTime(
         taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
     ) async throws -> RatchetTimeslip {
+        beginMutation()
         struct CreateTimeslipBody: Encodable {
             let project: String
             let task: String
@@ -372,6 +398,7 @@ public final class FreeAgentDataStore: DataStore {
     public func updateTimeslip(
         id: String, taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
     ) async throws -> RatchetTimeslip {
+        beginMutation()
         // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
         // record, not a partial patch, so reassigning the task means resending project/task too.
         struct UpdateTimeslipBody: Encodable {
