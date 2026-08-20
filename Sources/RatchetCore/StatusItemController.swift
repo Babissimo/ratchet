@@ -148,7 +148,9 @@ public final class StatusItemController {
             }
         },
         logOut: { [weak self] in
-            self?.performLogOut()
+            // Deferred for the same AppKit reason as the form prompts: running a modal
+            // synchronously from inside menu action dispatch can leave the alert non-key.
+            DispatchQueue.main.async { self?.confirmAndLogOut() }
         },
         startTracking: { [weak self] task in
             guard let self else { return }
@@ -289,6 +291,23 @@ public final class StatusItemController {
     private func performLogOut() {
         appState.logOut()
         onLogOut?()
+    }
+
+    /// The menu-driven Log Out. Logging out does not stop the FreeAgent timer — the timeslip
+    /// goes on accruing billable hours server-side with nothing left in the menu to say so —
+    /// so a running timer gets a confirmation naming it rather than a silent abandonment.
+    private func confirmAndLogOut() {
+        if case .tracking(let task, _) = appState.screen {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "A timer is still running"
+            alert.informativeText = "Logging out won't stop the timer for \(task.taskName) — it will keep recording time in FreeAgent. Stop it first if that's not what you want."
+            alert.addButton(withTitle: "Log Out Anyway")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        performLogOut()
     }
 
     /// Forces a logout after the session turned out to be dead, then tells the user once.
@@ -1150,6 +1169,15 @@ public final class StatusItemController {
         let response = alert.runModal()
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn else { return }
+
+        // `rebuild()` is skipped while the menu is open, so the row that opened this sheet came
+        // from the menu as it was built — possibly before a silent refresh learned the entry had
+        // been invoiced. FreeAgent closes an invoiced entry off, and editing billed time from a
+        // stale menu row is the one outcome worse than making the user look again.
+        if dataStore.timeslips.first(where: { $0.id == entry.id })?.isInvoiced == true {
+            presentValidationError("That entry has been added to an invoice since this menu was opened, so it can no longer be edited here.")
+            return
+        }
 
         guard let hours = DurationFormatter.parseHoursAndMinutes(durationField.stringValue) else {
             presentValidationError("Enter a duration as hours:minutes, e.g. 1:30 (max 24:00).")

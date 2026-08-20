@@ -56,6 +56,17 @@ public final class FreeAgentDataStore: DataStore {
         mutationEpoch &+= 1
     }
 
+    /// Every write interpolates `currentUserURL` into a body or query, and it is "" until the
+    /// first successful `refresh()`. An empty `user=` filter is not a harmless no-op: it asks
+    /// FreeAgent to file an entry against no user, or — on the running-timeslip query — to
+    /// answer for the whole company, which would let Ratchet adopt or stop a colleague's timer.
+    private func requireUserURL() throws -> String {
+        guard !currentUserURL.isEmpty else {
+            throw DataStoreError.underlying("Ratchet hasn't loaded your FreeAgent account yet — choose Refresh and try again.")
+        }
+        return currentUserURL
+    }
+
     public init(apiClient: FreeAgentAPIClient, environment: FreeAgentEnvironment, clock: @escaping () -> Date = Date.init) {
         self.apiClient = apiClient
         self.environment = environment
@@ -146,6 +157,7 @@ public final class FreeAgentDataStore: DataStore {
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
         beginMutation()
         defer { mutationEpoch &+= 1 }
+        let userURL = try requireUserURL()
         // Ask the server first, same as stopTimer()'s fallback: the today-scoped "existing
         // timeslip for this task" query below only finds a timeslip *created* today, not one
         // still running from before midnight — FreeAgent doesn't re-date a timeslip's
@@ -195,7 +207,7 @@ public final class FreeAgentDataStore: DataStore {
                 URLQueryItem(name: "project", value: projectId),
                 URLQueryItem(name: "from_date", value: today),
                 URLQueryItem(name: "to_date", value: today),
-                URLQueryItem(name: "user", value: currentUserURL),
+                URLQueryItem(name: "user", value: userURL),
             ], listKey: "timeslips"
         )
 
@@ -212,7 +224,7 @@ public final class FreeAgentDataStore: DataStore {
             }
             let created: FreeAgentTimeslipDTO = try await apiClient.post(
                 "timeslips", envelopeKey: "timeslip",
-                body: CreateTimeslipBody(project: projectId, task: taskId, user: currentUserURL, dated_on: today, hours: "0.0")
+                body: CreateTimeslipBody(project: projectId, task: taskId, user: userURL, dated_on: today, hours: "0.0")
             )
             timeslipURL = created.url
         }
@@ -271,10 +283,14 @@ public final class FreeAgentDataStore: DataStore {
     /// `resolvedTimeslip` depends on, so resolution has to happen after that fetch is awaited,
     /// not inside this function.
     private func fetchRunningTimeslipDTO(userURL: String? = nil) async throws -> FreeAgentTimeslipDTO? {
+        // `refresh()` passes its own freshly-fetched user URL explicitly (it hasn't committed
+        // `currentUserURL` yet at that point); only the nil path — every other caller — reads
+        // the stored one, so only that path needs the guard.
+        let resolvedUserURL = try userURL ?? requireUserURL()
         let running: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
                 URLQueryItem(name: "view", value: "running"),
-                URLQueryItem(name: "user", value: userURL ?? currentUserURL),
+                URLQueryItem(name: "user", value: resolvedUserURL),
             ], listKey: "timeslips"
         )
         return running.first
@@ -391,6 +407,7 @@ public final class FreeAgentDataStore: DataStore {
     ) async throws -> RatchetTimeslip {
         beginMutation()
         defer { mutationEpoch &+= 1 }
+        let userURL = try requireUserURL()
         struct CreateTimeslipBody: Encodable {
             let project: String
             let task: String
@@ -402,7 +419,7 @@ public final class FreeAgentDataStore: DataStore {
         let created: FreeAgentTimeslipDTO = try await apiClient.post(
             "timeslips", envelopeKey: "timeslip",
             body: CreateTimeslipBody(
-                project: projectId, task: taskId, user: currentUserURL,
+                project: projectId, task: taskId, user: userURL,
                 dated_on: dateString(date), hours: String(hours), comment: comment
             )
         )
@@ -420,6 +437,7 @@ public final class FreeAgentDataStore: DataStore {
     ) async throws -> RatchetTimeslip {
         beginMutation()
         defer { mutationEpoch &+= 1 }
+        let userURL = try requireUserURL()
         // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
         // record, not a partial patch, so reassigning the task means resending project/task too.
         struct UpdateTimeslipBody: Encodable {
@@ -433,7 +451,7 @@ public final class FreeAgentDataStore: DataStore {
         let updated: FreeAgentTimeslipDTO = try await apiClient.put(
             id, envelopeKey: "timeslip",
             body: UpdateTimeslipBody(
-                project: projectId, task: taskId, user: currentUserURL,
+                project: projectId, task: taskId, user: userURL,
                 dated_on: dateString(date), hours: String(hours), comment: comment
             )
         )

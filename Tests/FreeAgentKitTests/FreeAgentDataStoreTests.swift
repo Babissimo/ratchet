@@ -569,4 +569,21 @@ final class FreeAgentDataStoreTests: XCTestCase {
         let deletes = transport.calls.filter { $0.httpMethod == "DELETE" }.map { $0.url!.absoluteString }
         XCTAssertEqual(deletes, ["https://api.sandbox.freeagent.com/v2/timeslips/200/timer"])
     }
+
+    func test_logTime_refusesBeforeARefreshHasIdentifiedTheUser() async throws {
+        // Every write interpolates currentUserURL into the body or query. Before the first
+        // successful refresh it is "", which asks FreeAgent to file the entry against no user at
+        // all — or, for the running-timeslip query, against every user in the company.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [(match: "", status: 200, body: Data("{}".utf8))]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+
+        do {
+            _ = try await store.logTime(taskId: "t", projectId: "p", clientId: "c", date: Date(), hours: 1, comment: nil)
+            XCTFail("expected a refusal before the first refresh")
+        } catch let error as DataStoreError {
+            XCTAssertEqual(error, DataStoreError.underlying("Ratchet hasn't loaded your FreeAgent account yet — choose Refresh and try again."))
+        }
+    }
 }
