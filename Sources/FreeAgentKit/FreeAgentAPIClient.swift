@@ -95,7 +95,13 @@ public final class FreeAgentAPIClient {
             pageQuery.append(URLQueryItem(name: "per_page", value: String(perPage)))
             let data = try await authenticatedRequest(path: path, method: "GET", query: pageQuery, body: Data?.none)
             let envelope = try decode(data, as: [String: [T]].self)
-            let items = envelope[listKey] ?? []
+            // `?? []` here read a renamed or rewrapped envelope as "the account has none of
+            // these", which `refresh()` then committed as a successful, empty refresh — every
+            // menu blank, `lastRefreshedAt` stamped fresh, and nothing left to trigger a retry.
+            // An absent key is a response Ratchet doesn't understand, not an empty account.
+            guard let items = envelope[listKey] else {
+                throw FreeAgentError.decoding(MissingEnvelopeKey(envelopeKey: listKey))
+            }
             all.append(contentsOf: items)
             if items.count < perPage { break }
             page += 1

@@ -257,6 +257,37 @@ final class FreeAgentAPIClientTests: XCTestCase {
         store.clear()
     }
 
+    func test_getList_throwsWhenTheListKeyIsAbsent() async {
+        // A silent `?? []` here meant a renamed/rewrapped envelope read as "you have no clients",
+        // which refresh() then committed as success — emptying every menu with nothing to retry.
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"data":[]}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        do {
+            let _: [FreeAgentContactDTO] = try await client.getList("contacts", listKey: "contacts")
+            XCTFail("expected a decoding error for the missing \"contacts\" key")
+        } catch FreeAgentError.decoding {
+            // expected
+        } catch {
+            XCTFail("expected FreeAgentError.decoding, got \(error)")
+        }
+        store.clear()
+    }
+
+    func test_getList_stillReturnsAnEmptyListWhenTheKeyIsPresentButEmpty() async throws {
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"contacts":[]}"#.utf8))]
+        let store = makeStore()
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        let contacts: [FreeAgentContactDTO] = try await client.getList("contacts", listKey: "contacts")
+
+        XCTAssertTrue(contacts.isEmpty)
+        store.clear()
+    }
+
     func test_get_stillDecodesISO8601DatesWithoutFractionalSeconds() async throws {
         struct Timestamped: Decodable { let at: Date }
         let transport = StubTransport()
