@@ -2,6 +2,20 @@
 import Foundation
 import Security
 
+/// Why this exists instead of an `Optional`: `load()` returning nil conflated "there are no
+/// stored credentials" with "the Keychain could not be read right now" (locked, an ACL prompt
+/// declined, `errSecNotAvailable` early in boot). The caller mapped both to
+/// `FreeAgentError.unauthorized`, which the app treats as a dead session — so a transient read
+/// failure deleted a perfectly valid refresh token and forced a re-login.
+public enum TokenLoadResult {
+    case found(FreeAgentTokens)
+    /// Definitively no usable credentials: nothing stored, or stored bytes that no longer
+    /// decode. Logging out is the correct response.
+    case missing
+    /// The Keychain itself failed. Says nothing about the session — never log out on this.
+    case unavailable(OSStatus)
+}
+
 public final class KeychainTokenStore {
     private let service: String
     private let account = "default"
@@ -10,14 +24,34 @@ public final class KeychainTokenStore {
         self.service = service
     }
 
-    public func load() -> FreeAgentTokens? {
+    public func loadResult() -> TokenLoadResult {
         var query = itemQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(FreeAgentTokens.self, from: data)
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data,
+                  let tokens = try? JSONDecoder().decode(FreeAgentTokens.self, from: data) else {
+                // The item is there but unusable, which a re-login does fix — unlike a
+                // Keychain that simply wouldn't answer.
+                return .missing
+            }
+            return .found(tokens)
+        case errSecItemNotFound:
+            return .missing
+        default:
+            return .unavailable(status)
+        }
+    }
+
+    /// Convenience for call sites that genuinely only need "do we appear to have credentials"
+    /// and take no destructive action either way (e.g. `AppDelegate`'s launch-time seed).
+    /// Anything that might log the user out must use `loadResult()` instead.
+    public func load() -> FreeAgentTokens? {
+        if case .found(let tokens) = loadResult() { return tokens }
+        return nil
     }
 
     /// Persists `tokens`, returning false if the Keychain refused the write.

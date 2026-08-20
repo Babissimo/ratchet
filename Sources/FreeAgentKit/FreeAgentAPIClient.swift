@@ -215,7 +215,18 @@ public final class FreeAgentAPIClient {
     }
 
     private func authenticatedRequest(path: String, method: String, query: [URLQueryItem], body: Data?, isRetry: Bool = false) async throws -> Data {
-        guard var tokens = tokenStore.load() else { throw FreeAgentError.unauthorized }
+        var tokens: FreeAgentTokens
+        switch tokenStore.loadResult() {
+        case .found(let stored):
+            tokens = stored
+        case .missing:
+            throw FreeAgentError.unauthorized
+        case .unavailable(let status):
+            // Not `.unauthorized`: that routes to handleSessionExpired(), which clears the
+            // Keychain. Doing that because the Keychain was momentarily unreadable destroys the
+            // very credentials this request was trying to use.
+            throw FreeAgentError.credentialStoreUnavailable(status)
+        }
         if tokens.isExpired {
             tokens = try await refreshTokensShared(currentRefreshToken: tokens.refreshToken)
         }

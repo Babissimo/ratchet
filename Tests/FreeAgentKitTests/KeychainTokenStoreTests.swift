@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import XCTest
+import Security
 @testable import FreeAgentKit
 
 final class KeychainTokenStoreTests: XCTestCase {
@@ -48,5 +49,31 @@ final class KeychainTokenStoreTests: XCTestCase {
 
         XCTAssertTrue(almostExpired.isExpired)
         XCTAssertFalse(farFromExpiry.isExpired)
+    }
+
+    func test_loadResult_reportsMissingWhenNothingIsStored() {
+        let store = makeStore()
+        guard case .missing = store.loadResult() else {
+            return XCTFail("an empty store should report .missing")
+        }
+    }
+
+    func test_loadResult_reportsFoundAfterASave() {
+        let store = makeStore()
+        defer { store.clear() }
+        let tokens = FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: 3600))
+        XCTAssertTrue(store.save(tokens))
+        guard case .found(let loaded) = store.loadResult() else {
+            return XCTFail("expected .found")
+        }
+        XCTAssertEqual(loaded, tokens)
+    }
+
+    func test_credentialStoreUnavailableIsNotASessionExpiry() {
+        // The whole point of the new case: a Keychain that can't be read says nothing about
+        // whether the FreeAgent session is alive, and must never reach the code path that
+        // deletes the stored refresh token.
+        XCTAssertFalse(FreeAgentError.credentialStoreUnavailable(errSecInteractionNotAllowed).indicatesSessionExpired)
+        XCTAssertTrue(FreeAgentError.unauthorized.indicatesSessionExpired)
     }
 }
