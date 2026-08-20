@@ -38,11 +38,19 @@ private final class GatedStubTransport: FreeAgentTransport {
         pending.forEach { $0.resume() }
     }
 
-    func waitForGate() async {
+    /// Returns `true` once the gate is hit, `false` if it times out first. The caller must check
+    /// this before doing anything else — proceeding after a `false` means the interleaving under
+    /// test never happened (a query-parameter rename, say, breaking `gateMatch`), so the test
+    /// would go on to pass vacuously without exercising the race at all. It's also the only safe
+    /// way to avoid a hang: `release()` on an empty `waiting` array is a no-op, so if the gate is
+    /// then hit *after* this times out, that later `waitIfGated` call registers a continuation
+    /// nobody will ever resume, and anything still awaiting the gated task hangs forever.
+    func waitForGate() async -> Bool {
         for _ in 0..<2000 {
-            if gateHit { return }
+            if gateHit { return true }
             try? await Task.sleep(nanoseconds: 2_000_000)
         }
+        return false
     }
 
     /// Registers the continuation synchronously on the main actor, so `release()` can never run
@@ -512,7 +520,15 @@ final class FreeAgentDataStoreTests: XCTestCase {
 
         transport.arm()
         let inFlight = Task { @MainActor in try? await store.refresh() }
-        await transport.waitForGate()
+        // Bail out here rather than proceeding on a timeout: proceeding would mean either the
+        // interleaving under test never happened (the refresh ran to completion unblocked, so
+        // both assertions below pass without exercising the race at all) or, worse, calling
+        // `release()` on nothing and then awaiting `inFlight` while a *later* gate hit registers
+        // a continuation nobody will ever resume — a hang instead of a clean failure.
+        guard await transport.waitForGate() else {
+            XCTFail("refresh's view=running request never hit the gate — the interleaving this test exercises did not happen")
+            return
+        }
         _ = try await store.stopTimer()
         XCTAssertNil(store.currentRunningTimeslip)
         transport.release()

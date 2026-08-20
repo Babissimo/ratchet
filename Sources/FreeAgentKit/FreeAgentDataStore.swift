@@ -25,17 +25,33 @@ public final class FreeAgentDataStore: DataStore {
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
     private var currentUserURL: String = ""
-    /// Bumped on entry to every method that changes server-side state. `refresh()` snapshots it
-    /// before its first request and abandons its commit if the value moved, because a refresh's
-    /// responses describe the world as of when the server answered them — which, for a request
-    /// still in flight when the user starts or stops a timer, is the world *before* that action.
-    /// Committing them anyway reinstated it: a stopped timer came back as "tracking" (green
-    /// tray, climbing clock, and a Stop that then DELETEs a dead timer), and a just-started one
-    /// vanished to idle while FreeAgent went on billing.
+    /// Bumped on **both** entry to and exit from every method that changes server-side state, so
+    /// a `refresh()` whose requests overlap *any* part of a mutation — before it starts, while
+    /// its network calls are still outstanding, or spanning its completion — sees the epoch move
+    /// and discards its commit. `refresh()` snapshots this before its first request and abandons
+    /// its commit if the value has moved by the time it would otherwise commit, because a
+    /// refresh's responses describe the world as of when the server answered them.
+    ///
+    /// One edge is not enough. Bumping only on entry leaves a hole: a refresh that *starts*
+    /// after a mutation's entry-bump snapshots the already-incremented epoch, so as far as the
+    /// guard is concerned nothing has changed — even though the mutation's own result hasn't
+    /// landed yet. Concretely: the user clicks Start, `startTimer` bumps to N and suspends on
+    /// `fetchRunningTimeslip` (several round trips); the user then hits "Refresh projects &
+    /// tasks" (which deliberately bypasses the staleness gate), and that refresh reads epoch=N;
+    /// its `view=running` query is answered *before* `startTimer`'s `POST /timer` lands, so
+    /// `startTimer` sets `currentRunningTimeslip` only after the refresh already computed its
+    /// "nothing running" snapshot — which then commits straight over it, because the epoch never
+    /// moved during the refresh's own flight. That is exactly the "just-started timer erased to
+    /// idle while FreeAgent keeps billing" symptom this file exists to prevent (mirrored by a
+    /// wake-triggered refresh landing while a Stop's DELETE is still outstanding). The exit bump
+    /// closes the hole: it fires on every exit path, including a thrown error, because a
+    /// mutation that failed partway through may still have changed server state that a refresh
+    /// in flight has no way to know about.
     private var mutationEpoch: UInt64 = 0
 
-    /// Called at the *start* of each mutating method, not the end — a refresh whose responses
-    /// were computed while a mutation was mid-flight is just as stale as one that predates it.
+    /// Called at the start of each mutating method; the call site pairs it with
+    /// `defer { mutationEpoch &+= 1 }` for the matching exit-edge bump — see `mutationEpoch`'s
+    /// doc comment for why both edges are required.
     private func beginMutation() {
         mutationEpoch &+= 1
     }
@@ -129,6 +145,7 @@ public final class FreeAgentDataStore: DataStore {
 
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         // Ask the server first, same as stopTimer()'s fallback: the today-scoped "existing
         // timeslip for this task" query below only finds a timeslip *created* today, not one
         // still running from before midnight — FreeAgent doesn't re-date a timeslip's
@@ -230,6 +247,7 @@ public final class FreeAgentDataStore: DataStore {
 
     public func stopTimer() async throws -> RatchetTimeslip? {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         // Falling straight through to `return nil` on an empty cache was a silent failure with
         // real money attached: the caller discards the result and drops the UI to idle either
         // way, so a timer the cache had lost (a refresh that raced the running-view query, a
@@ -274,6 +292,7 @@ public final class FreeAgentDataStore: DataStore {
         town: String?, postcode: String?, country: String?
     ) async throws -> RatchetClient {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         struct CreateContactBody: Encodable {
             let organisation_name: String?
             let first_name: String?
@@ -306,6 +325,7 @@ public final class FreeAgentDataStore: DataStore {
         startsOn: Date?, endsOn: Date?
     ) async throws -> RatchetProject {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         struct CreateProjectBody: Encodable {
             let contact: String
             let name: String
@@ -344,6 +364,7 @@ public final class FreeAgentDataStore: DataStore {
         status: TaskStatus, billingRate: Double?, billingPeriod: BillingPeriod?
     ) async throws -> RatchetTask {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         struct CreateTaskBody: Encodable {
             let name: String
             let is_billable: Bool
@@ -371,6 +392,7 @@ public final class FreeAgentDataStore: DataStore {
         taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
     ) async throws -> RatchetTimeslip {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         struct CreateTimeslipBody: Encodable {
             let project: String
             let task: String
@@ -399,6 +421,7 @@ public final class FreeAgentDataStore: DataStore {
         id: String, taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
     ) async throws -> RatchetTimeslip {
         beginMutation()
+        defer { mutationEpoch &+= 1 }
         // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
         // record, not a partial patch, so reassigning the task means resending project/task too.
         struct UpdateTimeslipBody: Encodable {
