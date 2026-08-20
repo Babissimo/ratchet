@@ -234,12 +234,20 @@ final class FakeDataStore: DataStore {
         if let index = timeslips.firstIndex(where: {
             $0.taskId == taskId && $0.projectId == projectId && CalendarDay.dayString(from: $0.day) == today
         }) {
-            // Mirrors the real store: resuming makes this the running timer, so the returned
-            // slip must carry a live start instant or the UI has no elapsed baseline.
             let existing = timeslips[index]
+            // Two different real-store paths land here and must not be conflated: if this slip
+            // is *already* the one running (the same-task branch above didn't throw because
+            // there was no conflict, i.e. this is that same slip), FreeAgentDataStore.startTimer
+            // forwards its existing `timerStartedAt` unchanged — no network call re-stamps it.
+            // Only when it's today's *stopped* slip being restarted does the real POST /timer
+            // produce a fresh start instant. Stamping `clock()` unconditionally here reset the
+            // elapsed baseline on every call, including a second `startTimer` for a task that
+            // was already running — which production does not do.
+            let alreadyRunning = runningTimeslipId == existing.id
             let resumed = RatchetTimeslip(
                 id: existing.id, clientId: existing.clientId, projectId: existing.projectId,
-                taskId: existing.taskId, day: existing.day, timerStartedAt: clock(),
+                taskId: existing.taskId, day: existing.day,
+                timerStartedAt: alreadyRunning ? existing.timerStartedAt : clock(),
                 hours: existing.hours, comment: existing.comment, isInvoiced: existing.isInvoiced
             )
             timeslips[index] = resumed
@@ -268,14 +276,14 @@ final class FakeDataStore: DataStore {
         guard let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) else {
             return nil
         }
-        let stopped = RatchetTimeslip(
-            id: timeslips[index].id, clientId: timeslips[index].clientId,
-            projectId: timeslips[index].projectId, taskId: timeslips[index].taskId,
-            day: timeslips[index].day, timerStartedAt: nil, hours: timeslips[index].hours,
-            comment: timeslips[index].comment, isInvoiced: timeslips[index].isInvoiced
-        )
-        timeslips[index] = stopped
+        // Mirrors FreeAgentDataStore.stopTimer: it DELETEs the timer and forgets
+        // `currentRunningTimeslip`, but never re-resolves or rewrites the slip itself, so the
+        // returned (and cached) value keeps its stale `timerStartedAt` from when it was running.
+        // A test asserting `timerStartedAt == nil` after stop would pass here and fail against
+        // production, so this deliberately does *not* clear it — `runningTimeslipId` (here) /
+        // `currentRunningTimeslip` (there) is the only reliable "is this still running" signal;
+        // a stopped slip's leftover `timerStartedAt` must never be read as proof of the opposite.
         self.runningTimeslipId = nil
-        return stopped
+        return timeslips[index]
     }
 }

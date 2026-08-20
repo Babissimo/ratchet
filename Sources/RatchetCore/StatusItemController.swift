@@ -157,8 +157,13 @@ public final class StatusItemController {
                     let timeslip = try await self.dataStore.startTimer(
                         taskId: task.taskId, projectId: task.projectId, clientId: task.clientId
                     )
-                    // `startTimer` guarantees a non-nil start for a timer it just started; the coalesce is a
-                    // belt-and-braces baseline rather than a silent midnight fallback.
+                    // `startTimer` stamps a fresh start for a genuinely new (or resumed-from-stopped)
+                    // timer, but its same-task resume branch forwards the server's own
+                    // `timerStartedAt` unchanged, which is nil whenever the running-view response
+                    // omitted the timer object. The coalesce then re-bases a possibly long-running
+                    // timer to now, understating its elapsed time — but that's still the least-bad
+                    // outcome available here: the alternative is inventing a start instant with no
+                    // basis at all, e.g. the old midnight fallback that read as hours elapsed.
                     self.appState.startTracking(task, startedAt: timeslip.timerStartedAt ?? self.now())
                 } catch {
                     self.presentAPIError(error, action: "start tracking")

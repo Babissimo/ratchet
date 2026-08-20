@@ -139,6 +139,10 @@ final class FreeAgentModelMappingTests: XCTestCase {
         let timeslip = dto.toRatchetTimeslip()
         XCTAssertEqual(timeslip.hours, 1.5)
         XCTAssertEqual(timeslip.comment, "worked on the thing")
+        // The name promised this and never checked it — asserted nothing about `dated_on` at
+        // all, so a regression that dropped or mis-parsed it would have sailed through.
+        XCTAssertEqual(CalendarDay.dayString(from: timeslip.day), "2023-11-14")
+        XCTAssertNil(timeslip.timerStartedAt)
     }
 
     func test_timeslipDTO_withoutBilledOnInvoice_isNotInvoiced() {

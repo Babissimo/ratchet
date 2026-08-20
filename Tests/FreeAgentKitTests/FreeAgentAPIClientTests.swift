@@ -54,7 +54,7 @@ final class FreeAgentAPIClientTests: XCTestCase {
         let transport = StubTransport()
         let fullPage = (1...100).map { "{\"id\":\($0)}" }.joined(separator: ",")
         transport.responses = [
-            (200, Data(#"{"items":["#.utf8 + Data(fullPage.utf8) + Data("]}".utf8)),
+            (200, Data(#"{"items":["#.utf8) + Data(fullPage.utf8) + Data("]}".utf8)),
             (200, Data(#"{"items":[{"id":101}]}"#.utf8)),
         ]
         let store = makeStore()

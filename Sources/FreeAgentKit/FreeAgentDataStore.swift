@@ -179,12 +179,20 @@ public final class FreeAgentDataStore: DataStore {
         let started: FreeAgentTimeslipDTO = try await apiClient.post(
             "\(timeslipURL)/timer", envelopeKey: "timer", responseEnvelopeKey: "timeslip", body: EmptyBody()
         )
+        if started.timer?.running == false {
+            // Distinct from the "object omitted" case handled below: the server answered with a
+            // `timer` object and explicitly said it isn't running, i.e. the POST didn't actually
+            // start anything. Stamping `clock()` for this would present a dead timer as running
+            // since now — the one shape that made the "omitted means just-started" assumption
+            // below unsafe — so surface it as a failure instead.
+            throw DataStoreError.underlying("FreeAgent didn't start the timer — try again.")
+        }
         var resolved = resolvedTimeslip(started, clientId: clientId)
         if resolved.timerStartedAt == nil {
-            // The timer demonstrably just started — this call is what started it — so "now" is
-            // accurate to the round trip. Without this the elapsed baseline fell back to
-            // whatever `day` holds (local midnight), and a timer begun seconds ago displayed
-            // hours of elapsed time.
+            // The timer object was omitted altogether (not explicitly running:false, ruled out
+            // above), and this call is what started it — so "now" is accurate to the round trip.
+            // Without this the elapsed baseline fell back to whatever `day` holds (local
+            // midnight), and a timer begun seconds ago displayed hours of elapsed time.
             resolved = RatchetTimeslip(
                 id: resolved.id, clientId: resolved.clientId, projectId: resolved.projectId,
                 taskId: resolved.taskId, day: resolved.day, timerStartedAt: clock(),
@@ -378,21 +386,39 @@ public final class FreeAgentDataStore: DataStore {
             )
         )
         let resolved = resolvedTimeslip(updated, clientId: clientId)
+        // A PUT response that omits the `timer` object doesn't mean the timer stopped —
+        // FreeAgent doesn't always echo it back on this endpoint — so when this slip is the one
+        // actually running, carry its previously known start instant forward rather than letting
+        // a bare PUT null it out in the cache. Nothing reads `currentRunningTimeslip.
+        // timerStartedAt` today, but later reconciliation work reads from this same cache, so a
+        // silently dropped start instant here is a live trap for whichever of those ends up
+        // trusting it for elapsed time.
+        let reconciled: RatchetTimeslip
+        if resolved.timerStartedAt == nil, let stillRunning = currentRunningTimeslip, stillRunning.id == id,
+           let preserved = stillRunning.timerStartedAt {
+            reconciled = RatchetTimeslip(
+                id: resolved.id, clientId: resolved.clientId, projectId: resolved.projectId,
+                taskId: resolved.taskId, day: resolved.day, timerStartedAt: preserved,
+                hours: resolved.hours, comment: resolved.comment, isInvoiced: resolved.isInvoiced
+            )
+        } else {
+            reconciled = resolved
+        }
         // Replaced in place if still cached, rather than assuming it must be — an edit from a
         // stale menu (built before the entry aged out of the `refresh()` window, or from a
         // duplicate submenu still open after the underlying array changed) shouldn't silently
         // reinsert a slip the local cache had already dropped.
         if let index = timeslips.firstIndex(where: { $0.id == id }) {
-            timeslips[index] = resolved
+            timeslips[index] = reconciled
         }
         // `currentRunningTimeslip` is a separate stored property, not derived from `timeslips`
         // — "Switch task" edits a *running* timeslip's task in place (see `StatusItemController.
         // switchTask`) without stopping its timer, so without this the cache would keep
         // pointing at the pre-edit task/project/client until the next `refresh()`.
         if currentRunningTimeslip?.id == id {
-            currentRunningTimeslip = resolved
+            currentRunningTimeslip = reconciled
         }
-        return resolved
+        return reconciled
     }
 
     // MARK: - Private helpers
