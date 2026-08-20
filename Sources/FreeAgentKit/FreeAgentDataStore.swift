@@ -33,28 +33,29 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func refresh() async throws {
+        // Everything below is built into locals and assigned in the single commit block at the
+        // end. The previous shape assigned as it went, so a failure partway through left the
+        // store half-new: `clients` replaced while `timeslips` and `currentRunningTimeslip`
+        // still described the old world. That combination is exactly what makes a running
+        // timeslip unresolvable against the client tree, which used to drop the menu to idle
+        // while FreeAgent kept billing.
         let user: FreeAgentUserDTO = try await apiClient.get("users/me", envelopeKey: "user")
-        accountEmail = user.email
-        currentUserURL = user.url
+        let userURL = user.url
 
-        // Best-effort: "Open FreeAgent" falls back to whatever URL it already had (or nil) if
-        // this fails, rather than failing the whole refresh over a menu convenience link.
-        if let company: FreeAgentCompanyDTO = try? await apiClient.get("company", envelopeKey: "company") {
-            webAppURL = environment.webAppURL(subdomain: company.subdomain)
-        }
+        // Best-effort: "Open FreeAgent" keeps whatever URL it already had if this fails, rather
+        // than failing the whole refresh over a menu convenience link.
+        let company: FreeAgentCompanyDTO? = try? await apiClient.get("company", envelopeKey: "company")
 
-        // A trailing window rather than today-only: the menu's "Recent time entries" list is
-        // meant to be a short history, and "Log past time" writes entries dated in the past —
-        // with a today-only fetch those vanished from the menu on the very next refresh.
+        // A trailing window rather than today-only: "Recent time entries" is meant to be a short
+        // history, and "Log past time" writes entries dated in the past — with a today-only
+        // fetch those vanished from the menu on the very next refresh.
         let today = todayString()
         let windowStart = dateString(clock().addingTimeInterval(-Self.recentTimeslipWindowDays * 24 * 60 * 60))
 
-        // All five fetched as one concurrent batch: none depends on another's result — the two
-        // timeslip queries only need `currentUserURL` and the date strings above, not
-        // contacts/projects/tasks — and each is paginated, so running them in sequence made a
-        // launch-time refresh cost the sum of every round trip (plus their pages) before the
-        // menu showed anything. `async let` starts its child task at the declaration, not the
-        // `await`, so these all have to be declared together up front to actually overlap.
+        // All five fetched as one concurrent batch: none depends on another's result, and each
+        // is paginated, so running them in sequence made a launch-time refresh cost the sum of
+        // every round trip before the menu showed anything. `async let` starts its child task at
+        // the declaration, not the `await`, so these all have to be declared together up front.
         async let contactsFetch: [FreeAgentContactDTO] = apiClient.getList("contacts", listKey: "contacts")
         async let projectsFetch: [FreeAgentProjectDTO] = apiClient.getList("projects", listKey: "projects")
         async let tasksFetch: [FreeAgentTaskDTO] = apiClient.getList("tasks", listKey: "tasks")
@@ -62,44 +63,47 @@ public final class FreeAgentDataStore: DataStore {
             "timeslips", query: [
                 URLQueryItem(name: "from_date", value: windowStart),
                 URLQueryItem(name: "to_date", value: today),
-                URLQueryItem(name: "user", value: currentUserURL),
+                URLQueryItem(name: "user", value: userURL),
             ], listKey: "timeslips"
         )
-        async let runningFetch = fetchRunningTimeslipDTO()
+        async let runningFetch = fetchRunningTimeslipDTO(userURL: userURL)
 
         let contacts = try await contactsFetch
         let projects = try await projectsFetch
         let tasks = try await tasksFetch
+        let recentDTOs = try await recentFetch
+        let runningDTO = try await runningFetch
 
         // `uniquingKeysWith` rather than `uniqueKeysWithValues`: the latter traps at runtime if
-        // pagination ever hands back the same project URL twice (e.g. a page boundary served
-        // twice). "Last write wins" is a fine outcome for a duplicate of the same project.
-        projectToClientId = Dictionary(projects.map { ($0.url, $0.contact) }, uniquingKeysWith: { _, new in new })
-
+        // pagination ever hands back the same project URL twice. "Last write wins" is fine for
+        // a duplicate of the same project.
+        let newProjectToClientId = Dictionary(projects.map { ($0.url, $0.contact) }, uniquingKeysWith: { _, new in new })
         let tasksByProject = Dictionary(grouping: tasks, by: \.project)
         let projectsByContact = Dictionary(grouping: projects, by: \.contact)
 
-        clients = contacts.map { contact in
+        let newClients = contacts.map { contact in
             let contactProjects = (projectsByContact[contact.url] ?? []).map { project in
                 let projectTasks = (tasksByProject[project.url] ?? []).map { $0.toRatchetTask() }
                 return project.toRatchetProject(tasks: projectTasks)
             }
             return contact.toRatchetClient(projects: contactProjects)
         }
-
-        let recentTimeslips = try await recentFetch
-        // Kept sorted ascending by date so the array has one defined order regardless of what
+        // Resolved against the map just built, not the instance property — which is still the
+        // *previous* refresh's map until the commit block below.
+        // Kept sorted ascending by day so the array has one defined order regardless of what
         // sequence pagination returned; `logTime` preserves it on insert.
-        timeslips = recentTimeslips.map { resolvedTimeslip($0) }.sorted { $0.day < $1.day }
-        // Resolved here, not inside the concurrently-running fetch above: resolvedTimeslip needs
-        // projectToClientId, which this function only populates once `projects` (fetched
-        // concurrently alongside the running-timeslip query) has been awaited. Calling it from
-        // inside the async let race let currentRunningTimeslip.clientId come back "" whenever the
-        // running-timeslip request happened to finish first — on a fresh login, with
-        // projectToClientId still empty, that made restoreRunningTimer's client lookup fail
-        // silently, hiding an actually-running FreeAgent timer.
-        currentRunningTimeslip = try await runningFetch.map { resolvedTimeslip($0) }
+        let newTimeslips = recentDTOs.map { resolvedTimeslip($0, using: newProjectToClientId) }.sorted { $0.day < $1.day }
+        let newRunning = runningDTO.map { resolvedTimeslip($0, using: newProjectToClientId) }
 
+        // Single commit point: no `await` between here and the end of the function, so no other
+        // main-actor work can observe a half-applied refresh.
+        accountEmail = user.email
+        currentUserURL = userURL
+        if let company { webAppURL = environment.webAppURL(subdomain: company.subdomain) }
+        projectToClientId = newProjectToClientId
+        clients = newClients
+        timeslips = newTimeslips
+        currentRunningTimeslip = newRunning
         lastRefreshedAt = clock()
     }
 
@@ -228,11 +232,11 @@ public final class FreeAgentDataStore: DataStore {
     /// `RatchetTimeslip` — `refresh()` runs this concurrently with the projects fetch that
     /// `resolvedTimeslip` depends on, so resolution has to happen after that fetch is awaited,
     /// not inside this function.
-    private func fetchRunningTimeslipDTO() async throws -> FreeAgentTimeslipDTO? {
+    private func fetchRunningTimeslipDTO(userURL: String? = nil) async throws -> FreeAgentTimeslipDTO? {
         let running: [FreeAgentTimeslipDTO] = try await apiClient.getList(
             "timeslips", query: [
                 URLQueryItem(name: "view", value: "running"),
-                URLQueryItem(name: "user", value: currentUserURL),
+                URLQueryItem(name: "user", value: userURL ?? currentUserURL),
             ], listKey: "timeslips"
         )
         return running.first
@@ -423,14 +427,19 @@ public final class FreeAgentDataStore: DataStore {
 
     // MARK: - Private helpers
 
-    private func resolvedTimeslip(_ dto: FreeAgentTimeslipDTO, clientId: String? = nil) -> RatchetTimeslip {
-        let resolvedClientId = clientId ?? projectToClientId[dto.project] ?? ""
+    private func resolvedTimeslip(_ dto: FreeAgentTimeslipDTO, using projectMap: [String: String], clientId: String? = nil) -> RatchetTimeslip {
+        let resolvedClientId = clientId ?? projectMap[dto.project] ?? ""
         let mapped = dto.toRatchetTimeslip()
         return RatchetTimeslip(
             id: mapped.id, clientId: resolvedClientId, projectId: mapped.projectId,
             taskId: mapped.taskId, day: mapped.day, timerStartedAt: mapped.timerStartedAt,
             hours: mapped.hours, comment: mapped.comment, isInvoiced: mapped.isInvoiced
         )
+    }
+
+    /// The committed-state resolver, for the mutating calls that run outside `refresh()`.
+    private func resolvedTimeslip(_ dto: FreeAgentTimeslipDTO, clientId: String? = nil) -> RatchetTimeslip {
+        resolvedTimeslip(dto, using: projectToClientId, clientId: clientId)
     }
 
     private func withAppendedProject(_ client: RatchetClient, _ project: RatchetProject) -> RatchetClient {

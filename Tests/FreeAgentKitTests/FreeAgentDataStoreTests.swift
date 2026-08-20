@@ -404,4 +404,37 @@ final class FreeAgentDataStoreTests: XCTestCase {
         let startedAt = try XCTUnwrap(started.timerStartedAt)
         XCTAssertLessThan(abs(startedAt.timeIntervalSinceNow), 5)
     }
+
+    func test_refresh_commitsNothingWhenAnyFetchFails() async throws {
+        let today = CalendarDay.dayString(from: Date())
+        let runningBody = #"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/400","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"1.0","comment":null,"timer":{"running":true,"start_from":"2026-08-19T09:00:00Z"},"billed_on_invoice":null}"#
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[{"url":"https://api.sandbox.freeagent.com/v2/contacts/1","organisation_name":"Acme","first_name":null,"last_name":null,"email":null,"phone_number":null,"address1":null,"town":null,"postcode":null,"country":null}]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[{"url":"https://api.sandbox.freeagent.com/v2/projects/1","contact":"https://api.sandbox.freeagent.com/v2/contacts/1","name":"Site","status":"Active","currency":"GBP","budget":"0","budget_units":"Hours","hours_per_day":"8","normal_billing_rate":"0","billing_period":"hour","uses_project_invoice_sequence":false,"contract_po_reference":null,"starts_on":null,"ends_on":null}]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[{"url":"https://api.sandbox.freeagent.com/v2/tasks/1","project":"https://api.sandbox.freeagent.com/v2/projects/1","name":"Dev","is_billable":true,"status":"Active","billing_rate":null,"billing_period":null}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        XCTAssertEqual(store.clients.count, 1)
+        let firstRefreshAt = store.lastRefreshedAt
+
+        // Second refresh: the contact list now comes back empty and the timeslip window 500s.
+        // A partial commit here is what leaves a live running timeslip pointing into an empty
+        // client tree — the state that strands a running timer with no way to stop it.
+        transport.responsesByPathSubstring[4] = (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8))
+        transport.responsesByPathSubstring[3] = (match: "timeslips?", status: 500, body: Data(#"{"error":"boom"}"#.utf8))
+
+        do { try await store.refresh(); XCTFail("expected the refresh to throw") } catch {}
+
+        XCTAssertEqual(store.clients.count, 1, "clients must not be committed by a failed refresh")
+        XCTAssertEqual(store.timeslips.count, 1)
+        XCTAssertNotNil(store.currentRunningTimeslip)
+        XCTAssertEqual(store.lastRefreshedAt, firstRefreshAt, "a failed refresh must not stamp lastRefreshedAt")
+    }
 }
