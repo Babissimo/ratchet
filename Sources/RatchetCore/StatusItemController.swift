@@ -191,7 +191,13 @@ public final class StatusItemController {
                     // continuously against a different task, not to end one entry and begin
                     // another. Stop+restart was the first implementation, but it split what the
                     // user experiences as one continuous stretch of work into two timeslips.
-                    guard let running = self.dataStore.currentRunningTimeslip else {
+                    //
+                    // Read from the server, not from `currentRunningTimeslip`: FreeAgent's
+                    // timeslip PUT takes the complete record, so the hours and day sent here are
+                    // *asserted*, not merged. Sending the cache's values overwrote anything the
+                    // server had accrued since the last refresh — a pause and resume from the
+                    // web app silently lost the hours in between.
+                    guard let running = try await self.dataStore.runningTimeslip() else {
                         self.presentAPIError(DataStoreError.notFound, action: "switch tasks")
                         return
                     }
@@ -800,8 +806,11 @@ public final class StatusItemController {
                 if switchingFromRunningTimer {
                     // See `switchTask`'s comment: reassign the running timeslip's task in
                     // place rather than stopping and starting a new one, so switching to a
-                    // freshly-created task keeps the elapsed time continuous too.
-                    guard let running = self.dataStore.currentRunningTimeslip else {
+                    // freshly-created task keeps the elapsed time continuous too. Same reasoning
+                    // as there for reading from the server: the PUT asserts the full record, so
+                    // the hours and day must come from the server rather than a cache that may
+                    // be minutes old.
+                    guard let running = try await self.dataStore.runningTimeslip() else {
                         self.presentAPIError(DataStoreError.notFound, action: "switch tasks")
                         return
                     }
