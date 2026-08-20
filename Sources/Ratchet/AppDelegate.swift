@@ -111,28 +111,31 @@ private nonisolated func isLaunchAtLoginEnabled() -> Bool {
 /// showed idle, from identical server state.
 @MainActor
 func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppState) {
-    guard let running = dataStore.currentRunningTimeslip,
-          let client = dataStore.clients.first(where: { $0.id == running.clientId }),
-          let project = client.projects.first(where: { $0.id == running.projectId }),
-          let task = project.tasks.first(where: { $0.id == running.taskId })
-    else {
-        // The server has nothing running (or it names a client/project/task local state can't
-        // resolve) — if `appState` still shows tracking, that's now stale. Without this, a
-        // timer that stopped elsewhere (or was never actually started server-side to begin
-        // with) left the menu showing "tracking" forever; neither a manual Refresh nor the
-        // wake/menu-open silent refresh could ever bring it back to idle.
-        if appState.trackingTask != nil {
-            appState.stopTracking()
-        }
+    guard let running = dataStore.currentRunningTimeslip else {
+        // The server genuinely has nothing running, so local "tracking" is now stale. Without
+        // this, a timer stopped elsewhere left the menu tracking forever.
+        if appState.trackingTask != nil { appState.stopTracking() }
         return
     }
+
+    // Resolve as far as the local tree allows and fall back to placeholders for the rest.
+    // Treating an unresolvable-but-running timeslip as "nothing is running" used to call
+    // stopTracking(), which is worse than a wrong label: "Stop tracking" only exists on the
+    // tracking screen, so the menu dropped to idle and left no route to stop a timer that went
+    // on billing. It is reachable whenever the running task is Completed or Hidden, its project
+    // archived, or a list fetch came back short.
+    let client = dataStore.clients.first { $0.id == running.clientId }
+    let project = client?.projects.first { $0.id == running.projectId }
+    let task = project?.tasks.first { $0.id == running.taskId }
+    let isFullyResolved = task != nil
+
     let ref = TrackedTaskRef(
-        clientId: client.id, clientName: client.name,
-        projectId: project.id, projectName: project.name,
-        taskId: task.id, taskName: task.name
+        clientId: running.clientId, clientName: client?.name ?? "Unknown client",
+        projectId: running.projectId, projectName: project?.name ?? "Unknown project",
+        taskId: running.taskId, taskName: task?.name ?? "Unknown task"
     )
     // A timeslip the running-view query returned but that carries no timer start is a response
     // Ratchet can't date; counting from adoption undercounts, which is strictly safer than the
     // old midnight fallback's wild overcount.
-    appState.startTracking(ref, startedAt: running.timerStartedAt ?? Date())
+    appState.startTracking(ref, startedAt: running.timerStartedAt ?? Date(), recordAsMostRecent: isFullyResolved)
 }

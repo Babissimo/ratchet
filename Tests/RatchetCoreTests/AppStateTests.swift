@@ -134,4 +134,23 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertTrue(changed)
     }
+
+    func test_startTracking_canAdoptATimerWithoutMakingItTheMostRecentTask() {
+        // An adopted-but-unnameable timer must keep the Stop item reachable, but it must not
+        // become the "Start tracking <placeholder>" row on the idle screen afterwards.
+        let state = AppState()
+        state.logIn()
+        let real = TrackedTaskRef(clientId: "c", clientName: "Acme", projectId: "p", projectName: "Site", taskId: "t1", taskName: "Dev")
+        state.startTracking(real)
+        state.stopTracking()
+
+        let placeholder = TrackedTaskRef(clientId: "c", clientName: "Acme", projectId: "p", projectName: "Site", taskId: "t9", taskName: "Unknown task")
+        state.startTracking(placeholder, recordAsMostRecent: false)
+        guard case .tracking(let task, _) = state.screen else { return XCTFail("expected .tracking") }
+        XCTAssertEqual(task.taskId, "t9")
+
+        state.stopTracking()
+        guard case .idle(let mostRecent) = state.screen else { return XCTFail("expected .idle") }
+        XCTAssertEqual(mostRecent.taskId, "t1", "the placeholder must not become the most recent task")
+    }
 }

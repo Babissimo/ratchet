@@ -49,10 +49,13 @@ public final class AppState {
         onChange?()
     }
 
-    public func startTracking(_ task: TrackedTaskRef, startedAt: Date? = nil) {
+    /// `recordAsMostRecent: false` is for adopting a timer whose task can't be named from local
+    /// data — the placeholder ref keeps "Stop tracking" reachable, but it must never become the
+    /// "Start tracking …" row the idle screen offers afterwards.
+    public func startTracking(_ task: TrackedTaskRef, startedAt: Date? = nil, recordAsMostRecent: Bool = true) {
         trackingTask = task
         trackingStartedAt = startedAt ?? clock()
-        mostRecent = task
+        if recordAsMostRecent { mostRecent = task }
         onChange?()
     }
 
