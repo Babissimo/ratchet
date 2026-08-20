@@ -90,7 +90,7 @@ public final class FreeAgentDataStore: DataStore {
         let recentTimeslips = try await recentFetch
         // Kept sorted ascending by date so the array has one defined order regardless of what
         // sequence pagination returned; `logTime` preserves it on insert.
-        timeslips = recentTimeslips.map { resolvedTimeslip($0) }.sorted { $0.date < $1.date }
+        timeslips = recentTimeslips.map { resolvedTimeslip($0) }.sorted { $0.day < $1.day }
         // Resolved here, not inside the concurrently-running fetch above: resolvedTimeslip needs
         // projectToClientId, which this function only populates once `projects` (fetched
         // concurrently alongside the running-timeslip query) has been awaited. Calling it from
@@ -127,7 +127,8 @@ public final class FreeAgentDataStore: DataStore {
                 // keeps this path consistent with the others if the two ever disagree.
                 let resumed = RatchetTimeslip(
                     id: running.id, clientId: clientId, projectId: running.projectId, taskId: running.taskId,
-                    date: running.date, hours: running.hours, comment: running.comment
+                    day: running.day, timerStartedAt: running.timerStartedAt, hours: running.hours,
+                    comment: running.comment, isInvoiced: running.isInvoiced
                 )
                 currentRunningTimeslip = resumed
                 return resumed
@@ -178,7 +179,18 @@ public final class FreeAgentDataStore: DataStore {
         let started: FreeAgentTimeslipDTO = try await apiClient.post(
             "\(timeslipURL)/timer", envelopeKey: "timer", responseEnvelopeKey: "timeslip", body: EmptyBody()
         )
-        let resolved = resolvedTimeslip(started, clientId: clientId)
+        var resolved = resolvedTimeslip(started, clientId: clientId)
+        if resolved.timerStartedAt == nil {
+            // The timer demonstrably just started — this call is what started it — so "now" is
+            // accurate to the round trip. Without this the elapsed baseline fell back to
+            // whatever `day` holds (local midnight), and a timer begun seconds ago displayed
+            // hours of elapsed time.
+            resolved = RatchetTimeslip(
+                id: resolved.id, clientId: resolved.clientId, projectId: resolved.projectId,
+                taskId: resolved.taskId, day: resolved.day, timerStartedAt: clock(),
+                hours: resolved.hours, comment: resolved.comment, isInvoiced: resolved.isInvoiced
+            )
+        }
         currentRunningTimeslip = resolved
         return resolved
     }
@@ -340,7 +352,7 @@ public final class FreeAgentDataStore: DataStore {
         // Inserted in date order, not appended: a back-dated entry appended to the end would
         // read as the newest thing in the array, which is exactly how it used to jump to the
         // top of "Recent time entries" until the next refresh reshuffled it.
-        let insertionIndex = timeslips.firstIndex { $0.date > resolved.date } ?? timeslips.endIndex
+        let insertionIndex = timeslips.firstIndex { $0.day > resolved.day } ?? timeslips.endIndex
         timeslips.insert(resolved, at: insertionIndex)
         return resolved
     }
@@ -390,8 +402,8 @@ public final class FreeAgentDataStore: DataStore {
         let mapped = dto.toRatchetTimeslip()
         return RatchetTimeslip(
             id: mapped.id, clientId: resolvedClientId, projectId: mapped.projectId,
-            taskId: mapped.taskId, date: mapped.date, hours: mapped.hours, comment: mapped.comment,
-            isInvoiced: mapped.isInvoiced
+            taskId: mapped.taskId, day: mapped.day, timerStartedAt: mapped.timerStartedAt,
+            hours: mapped.hours, comment: mapped.comment, isInvoiced: mapped.isInvoiced
         )
     }
 

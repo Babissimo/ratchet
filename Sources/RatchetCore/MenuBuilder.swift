@@ -210,7 +210,7 @@ public enum MenuBuilder {
         // dropping it can reveal a 21st entry rather than shortening the visible list.
         let recent = dataStore.timeslips
             .filter { $0.id != dataStore.currentRunningTimeslip?.id }
-            .sorted { $0.date > $1.date }
+            .sorted { $0.day > $1.day }
             .prefix(20)
 
         menu.addItem(sectionHeaderItem("Unbilled"))
@@ -234,7 +234,7 @@ public enum MenuBuilder {
         for entry in entries {
             let path = path(for: entry, in: dataStore)
             let duration = ElapsedTimeFormatter.format(seconds: entry.hours * 3600)
-            let dateText = CalendarDay.displayString(from: entry.date)
+            let dateText = CalendarDay.displayString(from: entry.day)
             let title = "\(path) · \(duration) · \(dateText)"
             if editable {
                 // Clickable rather than `disabledItem`: this is the only route to correcting a

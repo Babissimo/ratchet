@@ -108,7 +108,7 @@ final class FreeAgentModelMappingTests: XCTestCase {
         XCTAssertEqual(task.billingPeriod, .hour)
     }
 
-    func test_timeslipDTO_withRunningTimer_usesTimerStartFromAsDate() {
+    func test_timeslipDTO_withRunningTimer_setsTimerStartedAtAndKeepsDayAsDatedOn() {
         let startFrom = Date(timeIntervalSince1970: 1_700_000_000)
         let dto = FreeAgentTimeslipDTO(
             url: "https://api.sandbox.freeagent.com/v2/timeslips/1",
@@ -120,7 +120,9 @@ final class FreeAgentModelMappingTests: XCTestCase {
             comment: nil,
             timer: FreeAgentTimerDTO(running: true, startFrom: startFrom)
         )
-        XCTAssertEqual(dto.toRatchetTimeslip().date, startFrom)
+        let slip = dto.toRatchetTimeslip()
+        XCTAssertEqual(slip.timerStartedAt, startFrom)
+        XCTAssertEqual(CalendarDay.dayString(from: slip.day), "2023-11-14")
     }
 
     func test_timeslipDTO_withoutTimer_usesDatedOn() {
@@ -166,5 +168,46 @@ final class FreeAgentModelMappingTests: XCTestCase {
             billedOnInvoice: "https://api.sandbox.freeagent.com/v2/invoices/1"
         )
         XCTAssertTrue(dto.toRatchetTimeslip().isInvoiced)
+    }
+
+    func test_toRatchetTimeslip_keepsTheCalendarDaySeparateFromTheTimerStart() {
+        let dto = FreeAgentTimeslipDTO(
+            url: "https://api.sandbox.freeagent.com/v2/timeslips/1",
+            project: "https://api.sandbox.freeagent.com/v2/projects/1",
+            task: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            user: "https://api.sandbox.freeagent.com/v2/users/1",
+            datedOn: "2026-08-12", hours: "1.5", comment: nil,
+            timer: FreeAgentTimerDTO(running: true, startFrom: Date(timeIntervalSince1970: 1_786_000_000))
+        )
+        let slip = dto.toRatchetTimeslip()
+        XCTAssertEqual(CalendarDay.dayString(from: slip.day), "2026-08-12")
+        XCTAssertEqual(slip.timerStartedAt, Date(timeIntervalSince1970: 1_786_000_000))
+    }
+
+    func test_toRatchetTimeslip_ignoresAStoppedTimersStartInstant() {
+        // FreeAgent can return a `timer` object with running:false. Treating its start_from as
+        // live made a paused entry look like it had been running since that instant.
+        let dto = FreeAgentTimeslipDTO(
+            url: "https://api.sandbox.freeagent.com/v2/timeslips/2",
+            project: "https://api.sandbox.freeagent.com/v2/projects/1",
+            task: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            user: "https://api.sandbox.freeagent.com/v2/users/1",
+            datedOn: "2026-08-12", hours: "1.5", comment: nil,
+            timer: FreeAgentTimerDTO(running: false, startFrom: Date(timeIntervalSince1970: 1_786_000_000))
+        )
+        XCTAssertNil(dto.toRatchetTimeslip().timerStartedAt)
+    }
+
+    func test_toRatchetTimeslip_hasNoTimerStartWhenTheResponseOmitsOne() {
+        let dto = FreeAgentTimeslipDTO(
+            url: "https://api.sandbox.freeagent.com/v2/timeslips/3",
+            project: "https://api.sandbox.freeagent.com/v2/projects/1",
+            task: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            user: "https://api.sandbox.freeagent.com/v2/users/1",
+            datedOn: "2026-08-12", hours: "0.0", comment: nil, timer: nil
+        )
+        let slip = dto.toRatchetTimeslip()
+        XCTAssertNil(slip.timerStartedAt)
+        XCTAssertEqual(CalendarDay.dayString(from: slip.day), "2026-08-12")
     }
 }

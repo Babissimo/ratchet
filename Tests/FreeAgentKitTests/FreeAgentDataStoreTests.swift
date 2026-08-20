@@ -381,4 +381,27 @@ final class FreeAgentDataStoreTests: XCTestCase {
         XCTAssertTrue(transport.calls[0].url!.absoluteString.contains("view=running"))
         tokenStore.clear()
     }
+
+    func test_startTimer_neverReportsAStartInstantHoursInThePast() async throws {
+        // The regression this guards: when the POST /timer response carried no `timer` object,
+        // the start instant fell back to local midnight, so a timer begun seconds ago displayed
+        // as many hours elapsed as had passed since midnight.
+        let transport = StubTransport()
+        let today = CalendarDay.dayString(from: Date())
+        transport.responsesByPathSubstring = [
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/1","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":null,"billed_on_invoice":null}]}"#.utf8)),
+            (match: "/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/1","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":null,"billed_on_invoice":null}}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+
+        let started = try await store.startTimer(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
+        )
+        let startedAt = try XCTUnwrap(started.timerStartedAt)
+        XCTAssertLessThan(abs(startedAt.timeIntervalSinceNow), 5)
+    }
 }

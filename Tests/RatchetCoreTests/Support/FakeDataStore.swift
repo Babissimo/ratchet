@@ -166,7 +166,7 @@ final class FakeDataStore: DataStore {
             clientId: clientId,
             projectId: projectId,
             taskId: taskId,
-            date: date,
+            day: date,
             hours: hours,
             comment: comment
         )
@@ -191,7 +191,7 @@ final class FakeDataStore: DataStore {
 
         let updated = RatchetTimeslip(
             id: id, clientId: clientId, projectId: projectId, taskId: taskId,
-            date: date, hours: hours, comment: comment
+            day: date, hours: hours, comment: comment
         )
         timeslips[index] = updated
         return updated
@@ -232,10 +232,19 @@ final class FakeDataStore: DataStore {
         // injects a clock can straddle midnight and see the same boundary the real store sees.
         let today = CalendarDay.dayString(from: clock())
         if let index = timeslips.firstIndex(where: {
-            $0.taskId == taskId && $0.projectId == projectId && CalendarDay.dayString(from: $0.date) == today
+            $0.taskId == taskId && $0.projectId == projectId && CalendarDay.dayString(from: $0.day) == today
         }) {
-            runningTimeslipId = timeslips[index].id
-            return timeslips[index]
+            // Mirrors the real store: resuming makes this the running timer, so the returned
+            // slip must carry a live start instant or the UI has no elapsed baseline.
+            let existing = timeslips[index]
+            let resumed = RatchetTimeslip(
+                id: existing.id, clientId: existing.clientId, projectId: existing.projectId,
+                taskId: existing.taskId, day: existing.day, timerStartedAt: clock(),
+                hours: existing.hours, comment: existing.comment, isInvoiced: existing.isInvoiced
+            )
+            timeslips[index] = resumed
+            runningTimeslipId = resumed.id
+            return resumed
         }
 
         // Nothing was running (the guard above would have thrown or resumed otherwise), so this
@@ -245,7 +254,8 @@ final class FakeDataStore: DataStore {
             clientId: clientId,
             projectId: projectId,
             taskId: taskId,
-            date: clock(),
+            day: clock(),
+            timerStartedAt: clock(),
             hours: 0,
             comment: nil
         )
@@ -258,7 +268,14 @@ final class FakeDataStore: DataStore {
         guard let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) else {
             return nil
         }
+        let stopped = RatchetTimeslip(
+            id: timeslips[index].id, clientId: timeslips[index].clientId,
+            projectId: timeslips[index].projectId, taskId: timeslips[index].taskId,
+            day: timeslips[index].day, timerStartedAt: nil, hours: timeslips[index].hours,
+            comment: timeslips[index].comment, isInvoiced: timeslips[index].isInvoiced
+        )
+        timeslips[index] = stopped
         self.runningTimeslipId = nil
-        return timeslips[index]
+        return stopped
     }
 }

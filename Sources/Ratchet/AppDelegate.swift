@@ -131,5 +131,8 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
         projectId: project.id, projectName: project.name,
         taskId: task.id, taskName: task.name
     )
-    appState.startTracking(ref, startedAt: running.date)
+    // A timeslip the running-view query returned but that carries no timer start is a response
+    // Ratchet can't date; counting from adoption undercounts, which is strictly safer than the
+    // old midnight fallback's wild overcount.
+    appState.startTracking(ref, startedAt: running.timerStartedAt ?? Date())
 }

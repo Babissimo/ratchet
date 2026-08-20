@@ -86,7 +86,7 @@ final class FakeDataStoreTests: XCTestCase {
         let newTaskId = "task-3"
         let original = RatchetTimeslip(
             id: "timeslip-1", clientId: clientId, projectId: originalProjectId, taskId: originalTaskId,
-            date: Date(timeIntervalSince1970: 0), hours: 1, comment: "Original"
+            day: Date(timeIntervalSince1970: 0), hours: 1, comment: "Original"
         )
         let store = FakeDataStore.seeded(timeslips: [original])
 
@@ -125,7 +125,7 @@ final class FakeDataStoreTests: XCTestCase {
     func test_updateTimeslip_throwsNotFoundForUnknownTask() async {
         let original = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: Date(), hours: 1, comment: nil
+            day: Date(), hours: 1, comment: nil
         )
         let store = FakeDataStore.seeded(timeslips: [original])
         do {

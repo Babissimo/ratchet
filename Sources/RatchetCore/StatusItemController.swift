@@ -157,7 +157,9 @@ public final class StatusItemController {
                     let timeslip = try await self.dataStore.startTimer(
                         taskId: task.taskId, projectId: task.projectId, clientId: task.clientId
                     )
-                    self.appState.startTracking(task, startedAt: timeslip.date)
+                    // `startTimer` guarantees a non-nil start for a timer it just started; the coalesce is a
+                    // belt-and-braces baseline rather than a silent midnight fallback.
+                    self.appState.startTracking(task, startedAt: timeslip.timerStartedAt ?? self.now())
                 } catch {
                     self.presentAPIError(error, action: "start tracking")
                 }
@@ -191,7 +193,7 @@ public final class StatusItemController {
                     _ = try await self.dataStore.updateTimeslip(
                         id: running.id,
                         taskId: task.taskId, projectId: task.projectId, clientId: task.clientId,
-                        date: running.date, hours: running.hours, comment: running.comment
+                        date: running.day, hours: running.hours, comment: running.comment
                     )
                     // Reassigns `appState.trackingTask` without disturbing `trackingStartedAt`
                     // — the timer never stopped, so the elapsed-time display must keep counting
@@ -801,12 +803,12 @@ public final class StatusItemController {
                     _ = try await self.dataStore.updateTimeslip(
                         id: running.id,
                         taskId: task.id, projectId: projectId, clientId: clientId,
-                        date: running.date, hours: running.hours, comment: running.comment
+                        date: running.day, hours: running.hours, comment: running.comment
                     )
                     self.appState.retask(ref)
                 } else {
                     let timeslip = try await self.dataStore.startTimer(taskId: task.id, projectId: projectId, clientId: clientId)
-                    self.appState.startTracking(ref, startedAt: timeslip.date)
+                    self.appState.startTracking(ref, startedAt: timeslip.timerStartedAt ?? self.now())
                 }
             } catch {
                 self.presentAPIError(error, action: switchingFromRunningTimer ? "switch tasks" : "start tracking the new task")
@@ -1101,7 +1103,7 @@ public final class StatusItemController {
         let datePicker = logTimeFields.datePicker
         let durationField = logTimeFields.durationField
         let commentField = logTimeFields.commentField
-        datePicker.dateValue = entry.date
+        datePicker.dateValue = entry.day
         durationField.stringValue = DurationFormatter.hoursAndMinutes(entry.hours)
         commentField.stringValue = entry.comment ?? ""
 

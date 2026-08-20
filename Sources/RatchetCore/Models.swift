@@ -168,7 +168,15 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
     public let clientId: String
     public let projectId: String
     public let taskId: String
-    public let date: Date
+    /// The calendar day this work is booked against — always local midnight of FreeAgent's
+    /// `dated_on`, never an instant. Kept separate from `timerStartedAt` because one field
+    /// used to mean both: it held `timer.start_from` when a timer object was present and local
+    /// midnight otherwise, so the same property was an instant or a day depending on which
+    /// endpoint had last filled it in, and the elapsed-time display read midnight as a start.
+    public let day: Date
+    /// When the currently-running timer on this timeslip started, or nil if no timer is
+    /// running on it. The only correct baseline for elapsed time.
+    public let timerStartedAt: Date?
     public let hours: Double
     public let comment: String?
     /// Whether FreeAgent has already billed this entry on an invoice. An invoiced entry is
@@ -176,14 +184,15 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
     public let isInvoiced: Bool
 
     public init(
-        id: String, clientId: String, projectId: String, taskId: String, date: Date, hours: Double,
-        comment: String? = nil, isInvoiced: Bool = false
+        id: String, clientId: String, projectId: String, taskId: String, day: Date,
+        timerStartedAt: Date? = nil, hours: Double, comment: String? = nil, isInvoiced: Bool = false
     ) {
         self.id = id
         self.clientId = clientId
         self.projectId = projectId
         self.taskId = taskId
-        self.date = date
+        self.day = day
+        self.timerStartedAt = timerStartedAt
         self.hours = hours
         self.comment = comment
         self.isInvoiced = isInvoiced

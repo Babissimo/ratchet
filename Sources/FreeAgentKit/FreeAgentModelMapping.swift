@@ -66,10 +66,16 @@ extension FreeAgentTimeslipDTO {
             clientId: "", // filled in by FreeAgentDataStore, which knows project->client
             projectId: project,
             taskId: task,
-            // `startFrom` is a true instant (the timer's start), whereas `datedOn` is a plain
-            // calendar day — parsed as local midnight so it displays as the day the user picked
-            // rather than slipping back one west of UTC.
-            date: timer?.startFrom ?? CalendarDay.day(from: datedOn) ?? Date(),
+            // `dated_on` is a plain calendar day, parsed as local midnight so it displays as
+            // the day the user picked rather than slipping back one west of UTC. The fallback
+            // is `.distantPast` rather than `Date()`: an unparseable day is a broken record,
+            // and dating it "today" would quietly file it under the wrong day and re-sort the
+            // Recent list around it.
+            day: CalendarDay.day(from: datedOn) ?? .distantPast,
+            // Only a *running* timer's start is a live baseline. FreeAgent can return a timer
+            // object with running:false, and treating that start_from as live made a paused
+            // entry look like it had been counting since that instant.
+            timerStartedAt: (timer?.running == true) ? timer?.startFrom : nil,
             hours: Double(hours) ?? 0,
             comment: comment,
             isInvoiced: billedOnInvoice != nil

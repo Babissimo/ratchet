@@ -42,11 +42,11 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
         let dataStore = FakeDataStore.seeded()
         let stopped = RatchetTimeslip(
             id: "timeslip-stopped", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: Date(timeIntervalSince1970: 1_700_000_000), hours: 2.5
+            day: Date(timeIntervalSince1970: 1_700_000_000), hours: 2.5
         )
         let running = RatchetTimeslip(
             id: "timeslip-running", clientId: "client-1", projectId: "proj-1", taskId: "task-2",
-            date: Date(timeIntervalSince1970: 1_700_086_400), hours: 1.0
+            day: Date(timeIntervalSince1970: 1_700_086_400), hours: 1.0
         )
         dataStore.seedTimeslips([stopped, running], runningId: running.id)
 
@@ -65,7 +65,7 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
         let dataStore = FakeDataStore.seeded()
         let entry = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: Date(timeIntervalSince1970: 1_700_000_000), hours: 2.5
+            day: Date(timeIntervalSince1970: 1_700_000_000), hours: 2.5
         )
         dataStore.seedTimeslips([entry])
 
@@ -78,11 +78,11 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
     func test_unbilledEntries_areClickableAndSortedNewestFirst() {
         let older = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: CalendarDay.day(from: "2026-08-10")!, hours: 1.5, comment: nil
+            day: CalendarDay.day(from: "2026-08-10")!, hours: 1.5, comment: nil
         )
         let newer = RatchetTimeslip(
             id: "timeslip-2", clientId: "client-1", projectId: "proj-2", taskId: "task-3",
-            date: CalendarDay.day(from: "2026-08-12")!, hours: 2, comment: "Kickoff call"
+            day: CalendarDay.day(from: "2026-08-12")!, hours: 2, comment: "Kickoff call"
         )
         let store = FakeDataStore.seeded(timeslips: [older, newer])
         let menu = MenuBuilder.buildRecentTimeEntriesSubmenu(dataStore: store, actions: noopActions())
@@ -104,7 +104,7 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
     func test_clickingUnbilledEntry_invokesEditTimeEntryWithThatEntry() {
         let entry = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: CalendarDay.day(from: "2026-08-10")!, hours: 1.5, comment: "Bug fixes"
+            day: CalendarDay.day(from: "2026-08-10")!, hours: 1.5, comment: "Bug fixes"
         )
         var edited: RatchetTimeslip?
         let store = FakeDataStore.seeded(timeslips: [entry])
@@ -119,7 +119,7 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
     func test_entryForUnknownTask_showsUnknownTaskFallback() {
         let entry = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-missing",
-            date: CalendarDay.day(from: "2026-08-10")!, hours: 1, comment: nil
+            day: CalendarDay.day(from: "2026-08-10")!, hours: 1, comment: nil
         )
         let store = FakeDataStore.seeded(timeslips: [entry])
         let menu = MenuBuilder.buildRecentTimeEntriesSubmenu(dataStore: store, actions: noopActions())
@@ -130,7 +130,7 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
     func test_invoicedEntries_appearUnderInvoicedHeaderAndAreNotEditable() {
         let entry = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: CalendarDay.day(from: "2026-08-10")!, hours: 1.5, comment: nil, isInvoiced: true
+            day: CalendarDay.day(from: "2026-08-10")!, hours: 1.5, comment: nil, isInvoiced: true
         )
         var editCalled = false
         let store = FakeDataStore.seeded(timeslips: [entry])
@@ -154,11 +154,11 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
     func test_mixOfUnbilledAndInvoiced_splitsAcrossBothSections() {
         let unbilled = RatchetTimeslip(
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
-            date: CalendarDay.day(from: "2026-08-10")!, hours: 1, isInvoiced: false
+            day: CalendarDay.day(from: "2026-08-10")!, hours: 1, isInvoiced: false
         )
         let invoiced = RatchetTimeslip(
             id: "timeslip-2", clientId: "client-1", projectId: "proj-1", taskId: "task-2",
-            date: CalendarDay.day(from: "2026-08-11")!, hours: 2, isInvoiced: true
+            day: CalendarDay.day(from: "2026-08-11")!, hours: 2, isInvoiced: true
         )
         let store = FakeDataStore.seeded(timeslips: [unbilled, invoiced])
         let menu = MenuBuilder.buildRecentTimeEntriesSubmenu(dataStore: store, actions: noopActions())
