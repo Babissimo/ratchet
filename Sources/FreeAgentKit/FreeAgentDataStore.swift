@@ -459,15 +459,7 @@ public final class FreeAgentDataStore: DataStore {
             let resolved = resolvedTimeslip(created, clientId: clientId)
             // id-keyed upsert, not a bare append — see `mutationEpoch`'s doc comment for the
             // narrow window in which a concurrent refresh can commit this same entry first.
-            if let index = timeslips.firstIndex(where: { $0.id == resolved.id }) {
-                timeslips[index] = resolved
-            } else {
-                // Inserted in date order, not appended: a back-dated entry appended to the end would
-                // read as the newest thing in the array, which is exactly how it used to jump to the
-                // top of "Recent time entries" until the next refresh reshuffled it.
-                let insertionIndex = timeslips.firstIndex { $0.day > resolved.day } ?? timeslips.endIndex
-                timeslips.insert(resolved, at: insertionIndex)
-            }
+            upsertKeepingDayOrder(resolved)
             return resolved
         }
     }
@@ -510,12 +502,12 @@ public final class FreeAgentDataStore: DataStore {
             } else {
                 reconciled = resolved
             }
-            // Replaced in place if still cached, rather than assuming it must be — an edit from a
+            // Replaced only if still cached, rather than assuming it must be — an edit from a
             // stale menu (built before the entry aged out of the `refresh()` window, or from a
             // duplicate submenu still open after the underlying array changed) shouldn't silently
             // reinsert a slip the local cache had already dropped.
-            if let index = timeslips.firstIndex(where: { $0.id == id }) {
-                timeslips[index] = reconciled
+            if timeslips.contains(where: { $0.id == id }) {
+                upsertKeepingDayOrder(reconciled)
             }
             // `currentRunningTimeslip` is a separate stored property, not derived from `timeslips`
             // — "Switch task" edits a *running* timeslip's task in place (see `StatusItemController.
@@ -529,6 +521,24 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     // MARK: - Private helpers
+
+    /// Inserts `slip` into `timeslips` keeping the array day-ascending, replacing any entry that
+    /// already carries its id.
+    ///
+    /// Both write paths need this, for different reasons. `logTime` needs the ordering because a
+    /// back-dated entry appended to the end reads as the newest thing in the array — exactly how
+    /// it used to jump to the top of "Recent time entries" until the next refresh reshuffled it.
+    /// `updateTimeslip` needs it because the edit sheet lets an entry's date change, and writing
+    /// the result back at its old index left the array unsorted; the *next* `logTime` then picked
+    /// its insertion point with a search that assumes ascending order, so one re-dated edit put
+    /// every subsequent entry in the wrong place until a refresh rebuilt the list.
+    private func upsertKeepingDayOrder(_ slip: RatchetTimeslip) {
+        if let existing = timeslips.firstIndex(where: { $0.id == slip.id }) {
+            timeslips.remove(at: existing)
+        }
+        let insertionIndex = timeslips.firstIndex { $0.day > slip.day } ?? timeslips.endIndex
+        timeslips.insert(slip, at: insertionIndex)
+    }
 
     private func resolvedTimeslip(_ dto: FreeAgentTimeslipDTO, using projectMap: [String: String], clientId: String? = nil) -> RatchetTimeslip {
         let resolvedClientId = clientId ?? projectMap[dto.project] ?? ""
