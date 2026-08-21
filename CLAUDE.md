@@ -17,13 +17,33 @@ every test target fails to compile with `no such module 'XCTest'` before a singl
 
 Consequences to keep in mind:
 
-- `swift build` is the only verification available here. It compiles the three source targets
-  but **not** the test targets, so a change that breaks a test file's *compilation* will pass
-  `swift build` silently.
-- After changing anything in `Sources/`, check test call sites by grep rather than assuming the
-  compiler will catch them — particularly signature changes on the `DataStore` protocol, whose
+- `swift build` compiles the source targets but **not** the test targets, so a change that
+  breaks a test file's *compilation* passes `swift build` silently. This is not hypothetical:
+  `Tests/FreeAgentKitTests/FreeAgentAPIClientTests.swift` carried an unbalanced paren from
+  `2057c7c` until 2026-08-20, so that target had never compiled at all.
+- After changing anything in `Sources/`, check test call sites rather than assuming the compiler
+  will catch them — particularly signature changes on the `DataStore` protocol, whose
   implementations include `Tests/RatchetCoreTests/Support/FakeDataStore.swift`.
 - Tests written in this state are unrun code. Say so plainly rather than implying they pass.
+
+Two things partly close the gap, and both are worth running before claiming a change is good:
+
+- **Type-check the test targets.** Build a minimal XCTest shim module, then
+  `swiftc -typecheck -target x86_64-apple-macosx13.0` the test files against the debug
+  `-enable-testing` `.swiftmodule`s. That catches broken call sites even though nothing can run
+  the assertions.
+- **Run the state-divergence harness**, which *does* execute:
+
+  ```bash
+  swift run Antagonise
+  ```
+
+  Ten scenarios drive the real `FreeAgentDataStore` against a stub transport and assert the
+  fixed behaviour for every local/remote divergence fixed in `cbcb28f..HEAD` — a stale cache
+  stopping the wrong timer, a refresh clobbering a just-started one, a re-dated edit unsorting
+  the timeslip list, and so on. It exits non-zero on any regression. Run it after touching
+  `FreeAgentDataStore`, `AppState`, or `restoreRunningTimer`; see
+  `Sources/Antagonise/main.swift` for what each scenario covers.
 
 Installing Xcode and running `xcode-select -s /Applications/Xcode.app` restores `swift test`.
 
@@ -52,6 +72,8 @@ That assembles `.build/Ratchet.app` around the built binary and registers it wit
 - `FreeAgentKit` — API client, OAuth, Keychain, DTOs, `FreeAgentDataStore`.
 - `Ratchet` — the executable: `AppDelegate`, `URLSchemeHandler`, `main.swift`.
 - `IconExporter` — dev-only tool that renders the app icon. Not shipped in the bundle.
+- `Antagonise` — dev-only regression harness for local/remote state divergence (see "Building
+  and testing" above). Not shipped in the bundle.
 
 ## Conventions
 
