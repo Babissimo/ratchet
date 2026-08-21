@@ -25,12 +25,11 @@ public final class FreeAgentDataStore: DataStore {
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
     private var currentUserURL: String = ""
-    /// Bumped on **both** entry to and exit from every method that changes server-side state, so
-    /// a `refresh()` whose requests overlap *any* part of a mutation — before it starts, while
-    /// its network calls are still outstanding, or spanning its completion — sees the epoch move
-    /// and discards its commit. `refresh()` snapshots this before its first request and abandons
-    /// its commit if the value has moved by the time it would otherwise commit, because a
-    /// refresh's responses describe the world as of when the server answered them.
+    /// Bumped on **both** entry to and exit from every mutating method (via `withMutation`
+    /// below, which makes forgetting either edge a compile error rather than a silent gap).
+    /// `refresh()` snapshots this before its first request and discards its commit if the value
+    /// has moved by the time it would otherwise commit, because a refresh's responses describe
+    /// the world as of when the server answered them, not as of when it started.
     ///
     /// One edge is not enough. Bumping only on entry leaves a hole: a refresh that *starts*
     /// after a mutation's entry-bump snapshots the already-incremented epoch, so as far as the
@@ -38,22 +37,32 @@ public final class FreeAgentDataStore: DataStore {
     /// landed yet. Concretely: the user clicks Start, `startTimer` bumps to N and suspends on
     /// `fetchRunningTimeslip` (several round trips); the user then hits "Refresh projects &
     /// tasks" (which deliberately bypasses the staleness gate), and that refresh reads epoch=N;
-    /// its `view=running` query is answered *before* `startTimer`'s `POST /timer` lands, so
-    /// `startTimer` sets `currentRunningTimeslip` only after the refresh already computed its
-    /// "nothing running" snapshot — which then commits straight over it, because the epoch never
-    /// moved during the refresh's own flight. That is exactly the "just-started timer erased to
-    /// idle while FreeAgent keeps billing" symptom this file exists to prevent (mirrored by a
-    /// wake-triggered refresh landing while a Stop's DELETE is still outstanding). The exit bump
-    /// closes the hole: it fires on every exit path, including a thrown error, because a
-    /// mutation that failed partway through may still have changed server state that a refresh
-    /// in flight has no way to know about.
+    /// its `view=running` query is answered *before* `startTimer`'s `POST /timer` lands, so that
+    /// refresh's "nothing running" snapshot commits straight over a timer that has, in fact,
+    /// already started server-side. The exit bump closes that hole for every exit path,
+    /// including a thrown error, since a mutation that failed partway through may still have
+    /// changed server state a refresh in flight has no way to know about.
+    ///
+    /// Both edges still leave a narrower hole: a refresh that snapshots the epoch *after* a
+    /// mutation's entry-bump and commits *before* its exit-bump sees no epoch movement either,
+    /// and commits normally — this needs a whole refresh to complete inside one mutation's
+    /// single suspension, so it's rare, but real on a slow POST. If that refresh's response
+    /// already includes the entity the mutation is about to write locally (its own request
+    /// landed server-side first), an append-only local write would then insert a second copy of
+    /// it. `logTime`, `addClient`, `addProject`, and `addTask` close that gap the same way
+    /// `updateTimeslip` always has: an id-keyed replace-if-present instead of a bare append.
     private var mutationEpoch: UInt64 = 0
 
-    /// Called at the start of each mutating method; the call site pairs it with
-    /// `defer { mutationEpoch &+= 1 }` for the matching exit-edge bump — see `mutationEpoch`'s
-    /// doc comment for why both edges are required.
-    private func beginMutation() {
+    /// Wraps a mutating method's whole body so the entry and exit epoch bumps can't be
+    /// forgotten independently — see `mutationEpoch`'s doc comment for why both edges matter.
+    /// Bumps on entry, runs `body`, then bumps again via `defer`, on every exit path including a
+    /// thrown error. Replaces the previous shape (a `beginMutation()` call paired by hand with a
+    /// `defer { mutationEpoch &+= 1 }` at each call site), which let a future mutating method
+    /// omit the `defer` with no compiler error and silently reopen the race this guards against.
+    private func withMutation<T>(_ body: () async throws -> T) async rethrows -> T {
         mutationEpoch &+= 1
+        defer { mutationEpoch &+= 1 }
+        return try await body()
     }
 
     /// Every write interpolates `currentUserURL` into a body or query, and it is "" until the
@@ -73,7 +82,33 @@ public final class FreeAgentDataStore: DataStore {
         self.clock = clock
     }
 
+    /// Tracks an in-flight `refresh()` so concurrent callers share one round trip. Same idiom as
+    /// `FreeAgentAPIClient.refreshTokensShared` — see its doc comment.
+    ///
+    /// Nothing serialized these before: the launch-time refresh (`AppDelegate`) and the
+    /// post-login refresh (`StatusItemController`'s `logIn` action) call `refresh()` directly,
+    /// setting neither `isSilentlyRefreshing` nor anything else. Launch with stored tokens, then
+    /// open the menu before the launch refresh finishes, and `menuWillOpen` — seeing
+    /// `lastRefreshedAt == nil` — starts a second, fully concurrent `refresh()`. `refresh()`
+    /// itself never bumped `mutationEpoch`, so neither call's epoch guard trips on the other;
+    /// the loser's single commit block simply overwrites the winner's wholesale and stamps
+    /// `lastRefreshedAt` fresh, hiding the staleness behind `silentlyRefreshIfStale()`'s
+    /// 120-second gate rather than actually resolving it.
+    private var inFlightRefresh: Task<Void, Error>?
+
     public func refresh() async throws {
+        if let existing = inFlightRefresh {
+            return try await existing.value
+        }
+        let task = Task<Void, Error> { [self] in
+            try await performRefresh()
+        }
+        inFlightRefresh = task
+        defer { inFlightRefresh = nil }
+        return try await task.value
+    }
+
+    private func performRefresh() async throws {
         let epoch = mutationEpoch
         // Everything below is built into locals and assigned in the single commit block at the
         // end. The previous shape assigned as it went, so a failure partway through left the
@@ -155,130 +190,123 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        let userURL = try requireUserURL()
-        // Ask the server first, same as stopTimer()'s fallback: the today-scoped "existing
-        // timeslip for this task" query below only finds a timeslip *created* today, not one
-        // still running from before midnight — FreeAgent doesn't re-date a timeslip's
-        // `dated_on` when its timer crosses a day boundary. Without this check, restarting a
-        // timer for the same task after the day rolled over (app restart, some other code path
-        // re-invoking start) found nothing "for today" and created a second, duplicate timeslip
-        // while the original kept running server-side.
-        //
-        // Always re-fetched from the server rather than trusting a cached `currentRunningTimeslip`
-        // — the cache can outlive the timeslip it names (stopped from the FreeAgent web app,
-        // another device, or simply yesterday's timer having ended). Trusting it here meant the
-        // same-task branch below returned "success" without a single network call: the menu
-        // showed tracking while FreeAgent was never told anything.
-        let running = try await fetchRunningTimeslip()
-        if let running {
-            if running.taskId == taskId {
-                // Already running for exactly the task being requested — resume it rather than
-                // starting (or creating) a second timeslip. Re-stamped with the caller's
-                // `clientId`, matching the two paths below, rather than whatever `running`
-                // already carried (from cache, or freshly resolved via `projectToClientId`) —
-                // keeps this path consistent with the others if the two ever disagree.
-                let resumed = RatchetTimeslip(
-                    id: running.id, clientId: clientId, projectId: running.projectId, taskId: running.taskId,
-                    day: running.day, timerStartedAt: running.timerStartedAt, hours: running.hours,
-                    comment: running.comment, isInvoiced: running.isInvoiced
+        try await withMutation {
+            let userURL = try requireUserURL()
+            // Ask the server first, same as stopTimer()'s unconditional check: the today-scoped
+            // "existing timeslip for this task" query below only finds a timeslip *created* today, not one
+            // still running from before midnight — FreeAgent doesn't re-date a timeslip's
+            // `dated_on` when its timer crosses a day boundary. Without this check, restarting a
+            // timer for the same task after the day rolled over (app restart, some other code path
+            // re-invoking start) found nothing "for today" and created a second, duplicate timeslip
+            // while the original kept running server-side.
+            //
+            // Always re-fetched from the server rather than trusting a cached `currentRunningTimeslip`
+            // — the cache can outlive the timeslip it names (stopped from the FreeAgent web app,
+            // another device, or simply yesterday's timer having ended). Trusting it here meant the
+            // same-task branch below returned "success" without a single network call: the menu
+            // showed tracking while FreeAgent was never told anything.
+            let running = try await fetchRunningTimeslip()
+            if let running {
+                if running.taskId == taskId {
+                    // Already running for exactly the task being requested — resume it rather than
+                    // starting (or creating) a second timeslip. Re-stamped with the caller's
+                    // `clientId`, matching the two paths below, rather than whatever `running`
+                    // already carried (from cache, or freshly resolved via `projectToClientId`) —
+                    // keeps this path consistent with the others if the two ever disagree.
+                    let resumed = running.withClientId(clientId)
+                    currentRunningTimeslip = resumed
+                    return resumed
+                }
+                // The menu only ever offers "Start tracking" from the idle screen — never alongside
+                // an active .tracking screen — so a running timeslip for a *different* task here
+                // means local state has drifted from the server (a timer started from the FreeAgent
+                // web app, another device, or a stale cache), not a normal call path. The app has no
+                // multi-timer support (see TODO.md), so surface this rather than silently stopping
+                // someone else's/another device's timer out from under them.
+                // "Stop it first" has no menu route from the idle screen (only "Switch task", on the
+                // tracking screen, offers a stop) — pointing at Refresh gives the idle-screen user
+                // an actual next step: it re-adopts the drifted timer so it shows as tracking here,
+                // and only then does "Stop tracking" exist to act on it.
+                throw DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there.")
+            }
+
+            let today = todayString()
+            let existing: [FreeAgentTimeslipDTO] = try await apiClient.getList(
+                "timeslips", query: [
+                    URLQueryItem(name: "task", value: taskId),
+                    URLQueryItem(name: "project", value: projectId),
+                    URLQueryItem(name: "from_date", value: today),
+                    URLQueryItem(name: "to_date", value: today),
+                    URLQueryItem(name: "user", value: userURL),
+                ], listKey: "timeslips"
+            )
+
+            let timeslipURL: String
+            if let found = existing.first {
+                timeslipURL = found.url
+            } else {
+                struct CreateTimeslipBody: Encodable {
+                    let project: String
+                    let task: String
+                    let user: String
+                    let dated_on: String
+                    let hours: String
+                }
+                let created: FreeAgentTimeslipDTO = try await apiClient.post(
+                    "timeslips", envelopeKey: "timeslip",
+                    body: CreateTimeslipBody(project: projectId, task: taskId, user: userURL, dated_on: today, hours: "0.0")
                 )
-                currentRunningTimeslip = resumed
-                return resumed
+                timeslipURL = created.url
             }
-            // The menu only ever offers "Start tracking" from the idle screen — never alongside
-            // an active .tracking screen — so a running timeslip for a *different* task here
-            // means local state has drifted from the server (a timer started from the FreeAgent
-            // web app, another device, or a stale cache), not a normal call path. The app has no
-            // multi-timer support (see TODO.md), so surface this rather than silently stopping
-            // someone else's/another device's timer out from under them.
-            // "Stop it first" has no menu route from the idle screen (only "Switch task", on the
-            // tracking screen, offers a stop) — pointing at Refresh gives the idle-screen user
-            // an actual next step: it re-adopts the drifted timer so it shows as tracking here,
-            // and only then does "Stop tracking" exist to act on it.
-            throw DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there.")
-        }
 
-        let today = todayString()
-        let existing: [FreeAgentTimeslipDTO] = try await apiClient.getList(
-            "timeslips", query: [
-                URLQueryItem(name: "task", value: taskId),
-                URLQueryItem(name: "project", value: projectId),
-                URLQueryItem(name: "from_date", value: today),
-                URLQueryItem(name: "to_date", value: today),
-                URLQueryItem(name: "user", value: userURL),
-            ], listKey: "timeslips"
-        )
-
-        let timeslipURL: String
-        if let found = existing.first {
-            timeslipURL = found.url
-        } else {
-            struct CreateTimeslipBody: Encodable {
-                let project: String
-                let task: String
-                let user: String
-                let dated_on: String
-                let hours: String
+            struct EmptyBody: Encodable {}
+            let started: FreeAgentTimeslipDTO = try await apiClient.post(
+                "\(timeslipURL)/timer", envelopeKey: "timer", responseEnvelopeKey: "timeslip", body: EmptyBody()
+            )
+            if started.timer?.running == false {
+                // Distinct from the "object omitted" case handled below: the server answered with a
+                // `timer` object and explicitly said it isn't running, i.e. the POST didn't actually
+                // start anything. Stamping `clock()` for this would present a dead timer as running
+                // since now — the one shape that made the "omitted means just-started" assumption
+                // below unsafe — so surface it as a failure instead.
+                throw DataStoreError.underlying("FreeAgent didn't start the timer — try again.")
             }
-            let created: FreeAgentTimeslipDTO = try await apiClient.post(
-                "timeslips", envelopeKey: "timeslip",
-                body: CreateTimeslipBody(project: projectId, task: taskId, user: userURL, dated_on: today, hours: "0.0")
-            )
-            timeslipURL = created.url
+            var resolved = resolvedTimeslip(started, clientId: clientId)
+            if resolved.timerStartedAt == nil {
+                // The timer object was omitted altogether (not explicitly running:false, ruled out
+                // above), and this call is what started it — so "now" is accurate to the round trip.
+                // Without this the elapsed baseline fell back to whatever `day` holds (local
+                // midnight), and a timer begun seconds ago displayed hours of elapsed time.
+                resolved = resolved.withTimerStartedAt(clock())
+            }
+            currentRunningTimeslip = resolved
+            return resolved
         }
-
-        struct EmptyBody: Encodable {}
-        let started: FreeAgentTimeslipDTO = try await apiClient.post(
-            "\(timeslipURL)/timer", envelopeKey: "timer", responseEnvelopeKey: "timeslip", body: EmptyBody()
-        )
-        if started.timer?.running == false {
-            // Distinct from the "object omitted" case handled below: the server answered with a
-            // `timer` object and explicitly said it isn't running, i.e. the POST didn't actually
-            // start anything. Stamping `clock()` for this would present a dead timer as running
-            // since now — the one shape that made the "omitted means just-started" assumption
-            // below unsafe — so surface it as a failure instead.
-            throw DataStoreError.underlying("FreeAgent didn't start the timer — try again.")
-        }
-        var resolved = resolvedTimeslip(started, clientId: clientId)
-        if resolved.timerStartedAt == nil {
-            // The timer object was omitted altogether (not explicitly running:false, ruled out
-            // above), and this call is what started it — so "now" is accurate to the round trip.
-            // Without this the elapsed baseline fell back to whatever `day` holds (local
-            // midnight), and a timer begun seconds ago displayed hours of elapsed time.
-            resolved = RatchetTimeslip(
-                id: resolved.id, clientId: resolved.clientId, projectId: resolved.projectId,
-                taskId: resolved.taskId, day: resolved.day, timerStartedAt: clock(),
-                hours: resolved.hours, comment: resolved.comment, isInvoiced: resolved.isInvoiced
-            )
-        }
-        currentRunningTimeslip = resolved
-        return resolved
     }
 
     public func stopTimer() async throws -> RatchetTimeslip? {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        // Always the server, never the cache. The old code only queried when the cache was
-        // empty — but a cache naming the *wrong* timeslip is the dangerous case, not the
-        // absent one: it DELETEd a timer that had already been stopped elsewhere, reported
-        // success, and left the timer that was genuinely running to bill on unnoticed.
-        guard let running = try await fetchRunningTimeslip() else {
+        try await withMutation {
+            // Always the server, never the cache. The old code only queried when the cache was
+            // empty — but a cache naming the *wrong* timeslip is the dangerous case, not the
+            // absent one: it DELETEd a timer that had already been stopped elsewhere, reported
+            // success, and left the timer that was genuinely running to bill on unnoticed.
+            guard let running = try await fetchRunningTimeslip() else {
+                currentRunningTimeslip = nil
+                return nil
+            }
+            try await apiClient.delete("\(running.id)/timer")
             currentRunningTimeslip = nil
-            return nil
+            return running
         }
-        try await apiClient.delete("\(running.id)/timer")
-        currentRunningTimeslip = nil
-        return running
     }
 
     public func runningTimeslip() async throws -> RatchetTimeslip? {
         try await fetchRunningTimeslip()
     }
 
-    /// The authoritative "is anything running for this user" query, shared by `refresh()` and
-    /// `stopTimer()`'s fallback. Returns the raw DTO rather than resolving it to a
+    /// The authoritative "is anything running for this user" query, shared by `refresh()`,
+    /// `startTimer()`, `stopTimer()`, and `runningTimeslip()` — none of them trusts a cached
+    /// `currentRunningTimeslip` in its place. Returns the raw DTO rather than resolving it to a
     /// `RatchetTimeslip` — `refresh()` runs this concurrently with the projects fetch that
     /// `resolvedTimeslip` depends on, so resolution has to happen after that fetch is awaited,
     /// not inside this function.
@@ -305,30 +333,36 @@ public final class FreeAgentDataStore: DataStore {
         email: String?, phoneNumber: String?, address1: String?,
         town: String?, postcode: String?, country: String?
     ) async throws -> RatchetClient {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        struct CreateContactBody: Encodable {
-            let organisation_name: String?
-            let first_name: String?
-            let last_name: String?
-            let email: String?
-            let phone_number: String?
-            let address1: String?
-            let town: String?
-            let postcode: String?
-            let country: String?
-        }
-        let created: FreeAgentContactDTO = try await apiClient.post(
-            "contacts", envelopeKey: "contact",
-            body: CreateContactBody(
-                organisation_name: organisationName, first_name: firstName, last_name: lastName,
-                email: email, phone_number: phoneNumber,
-                address1: address1, town: town, postcode: postcode, country: country
+        try await withMutation {
+            struct CreateContactBody: Encodable {
+                let organisation_name: String?
+                let first_name: String?
+                let last_name: String?
+                let email: String?
+                let phone_number: String?
+                let address1: String?
+                let town: String?
+                let postcode: String?
+                let country: String?
+            }
+            let created: FreeAgentContactDTO = try await apiClient.post(
+                "contacts", envelopeKey: "contact",
+                body: CreateContactBody(
+                    organisation_name: organisationName, first_name: firstName, last_name: lastName,
+                    email: email, phone_number: phoneNumber,
+                    address1: address1, town: town, postcode: postcode, country: country
+                )
             )
-        )
-        let client = created.toRatchetClient(projects: [])
-        clients.append(client)
-        return client
+            let client = created.toRatchetClient(projects: [])
+            // id-keyed upsert, not a bare append — see `mutationEpoch`'s doc comment for the
+            // narrow window in which a concurrent refresh can commit this same client first.
+            if let index = clients.firstIndex(where: { $0.id == client.id }) {
+                clients[index] = client
+            } else {
+                clients.append(client)
+            }
+            return client
+        }
     }
 
     public func addProject(
@@ -338,169 +372,167 @@ public final class FreeAgentDataStore: DataStore {
         usesProjectInvoiceSequence: Bool, contractPoReference: String?,
         startsOn: Date?, endsOn: Date?
     ) async throws -> RatchetProject {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        struct CreateProjectBody: Encodable {
-            let contact: String
-            let name: String
-            let status: String
-            let currency: String
-            let budget: String
-            let budget_units: String
-            let hours_per_day: String
-            let normal_billing_rate: String
-            let billing_period: String
-            let uses_project_invoice_sequence: Bool
-            let contract_po_reference: String?
-            let starts_on: String?
-            let ends_on: String?
-        }
-        let created: FreeAgentProjectDTO = try await apiClient.post(
-            "projects", envelopeKey: "project",
-            body: CreateProjectBody(
-                contact: clientId, name: name, status: status.rawValue, currency: currency,
-                budget: String(budget), budget_units: budgetUnits.rawValue,
-                hours_per_day: String(hoursPerDay), normal_billing_rate: String(normalBillingRate),
-                billing_period: billingPeriod.rawValue, uses_project_invoice_sequence: usesProjectInvoiceSequence,
-                contract_po_reference: contractPoReference,
-                starts_on: startsOn.map(dateString), ends_on: endsOn.map(dateString)
+        try await withMutation {
+            struct CreateProjectBody: Encodable {
+                let contact: String
+                let name: String
+                let status: String
+                let currency: String
+                let budget: String
+                let budget_units: String
+                let hours_per_day: String
+                let normal_billing_rate: String
+                let billing_period: String
+                let uses_project_invoice_sequence: Bool
+                let contract_po_reference: String?
+                let starts_on: String?
+                let ends_on: String?
+            }
+            let created: FreeAgentProjectDTO = try await apiClient.post(
+                "projects", envelopeKey: "project",
+                body: CreateProjectBody(
+                    contact: clientId, name: name, status: status.rawValue, currency: currency,
+                    budget: String(budget), budget_units: budgetUnits.rawValue,
+                    hours_per_day: String(hoursPerDay), normal_billing_rate: String(normalBillingRate),
+                    billing_period: billingPeriod.rawValue, uses_project_invoice_sequence: usesProjectInvoiceSequence,
+                    contract_po_reference: contractPoReference,
+                    starts_on: startsOn.map(dateString), ends_on: endsOn.map(dateString)
+                )
             )
-        )
-        projectToClientId[created.url] = clientId
-        let project = created.toRatchetProject(tasks: [])
-        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
-        clients[clientIndex] = withAppendedProject(clients[clientIndex], project)
-        return project
+            projectToClientId[created.url] = clientId
+            let project = created.toRatchetProject(tasks: [])
+            guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
+            clients[clientIndex] = withUpsertedProject(clients[clientIndex], project)
+            return project
+        }
     }
 
     public func addTask(
         name: String, projectId: String, clientId: String, isBillable: Bool,
         status: TaskStatus, billingRate: Double?, billingPeriod: BillingPeriod?
     ) async throws -> RatchetTask {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        struct CreateTaskBody: Encodable {
-            let name: String
-            let is_billable: Bool
-            let status: String
-            let billing_rate: String?
-            let billing_period: String?
-        }
-        let created: FreeAgentTaskDTO = try await apiClient.post(
-            "tasks", envelopeKey: "task",
-            query: [URLQueryItem(name: "project", value: projectId)],
-            body: CreateTaskBody(
-                name: name, is_billable: isBillable, status: status.rawValue,
-                billing_rate: billingRate.map { String($0) }, billing_period: billingPeriod?.rawValue
+        try await withMutation {
+            struct CreateTaskBody: Encodable {
+                let name: String
+                let is_billable: Bool
+                let status: String
+                let billing_rate: String?
+                let billing_period: String?
+            }
+            let created: FreeAgentTaskDTO = try await apiClient.post(
+                "tasks", envelopeKey: "task",
+                query: [URLQueryItem(name: "project", value: projectId)],
+                body: CreateTaskBody(
+                    name: name, is_billable: isBillable, status: status.rawValue,
+                    billing_rate: billingRate.map { String($0) }, billing_period: billingPeriod?.rawValue
+                )
             )
-        )
-        let task = created.toRatchetTask()
-        guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }),
-              let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId })
-        else { throw DataStoreError.notFound }
-        clients[clientIndex] = withAppendedTask(clients[clientIndex], projectIndex: projectIndex, task: task)
-        return task
+            let task = created.toRatchetTask()
+            guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }),
+                  let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId })
+            else { throw DataStoreError.notFound }
+            clients[clientIndex] = withUpsertedTask(clients[clientIndex], projectIndex: projectIndex, task: task)
+            return task
+        }
     }
 
     public func logTime(
         taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
     ) async throws -> RatchetTimeslip {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        let userURL = try requireUserURL()
-        struct CreateTimeslipBody: Encodable {
-            let project: String
-            let task: String
-            let user: String
-            let dated_on: String
-            let hours: String
-            let comment: String?
-        }
-        let created: FreeAgentTimeslipDTO = try await apiClient.post(
-            "timeslips", envelopeKey: "timeslip",
-            body: CreateTimeslipBody(
-                project: projectId, task: taskId, user: userURL,
-                dated_on: dateString(date), hours: String(hours), comment: comment
+        try await withMutation {
+            let userURL = try requireUserURL()
+            struct CreateTimeslipBody: Encodable {
+                let project: String
+                let task: String
+                let user: String
+                let dated_on: String
+                let hours: String
+                let comment: String?
+            }
+            let created: FreeAgentTimeslipDTO = try await apiClient.post(
+                "timeslips", envelopeKey: "timeslip",
+                body: CreateTimeslipBody(
+                    project: projectId, task: taskId, user: userURL,
+                    dated_on: dateString(date), hours: String(hours), comment: comment
+                )
             )
-        )
-        let resolved = resolvedTimeslip(created, clientId: clientId)
-        // Inserted in date order, not appended: a back-dated entry appended to the end would
-        // read as the newest thing in the array, which is exactly how it used to jump to the
-        // top of "Recent time entries" until the next refresh reshuffled it.
-        let insertionIndex = timeslips.firstIndex { $0.day > resolved.day } ?? timeslips.endIndex
-        timeslips.insert(resolved, at: insertionIndex)
-        return resolved
+            let resolved = resolvedTimeslip(created, clientId: clientId)
+            // id-keyed upsert, not a bare append — see `mutationEpoch`'s doc comment for the
+            // narrow window in which a concurrent refresh can commit this same entry first.
+            if let index = timeslips.firstIndex(where: { $0.id == resolved.id }) {
+                timeslips[index] = resolved
+            } else {
+                // Inserted in date order, not appended: a back-dated entry appended to the end would
+                // read as the newest thing in the array, which is exactly how it used to jump to the
+                // top of "Recent time entries" until the next refresh reshuffled it.
+                let insertionIndex = timeslips.firstIndex { $0.day > resolved.day } ?? timeslips.endIndex
+                timeslips.insert(resolved, at: insertionIndex)
+            }
+            return resolved
+        }
     }
 
     public func updateTimeslip(
         id: String, taskId: String, projectId: String, clientId: String, date: Date, hours: Double, comment: String?
     ) async throws -> RatchetTimeslip {
-        beginMutation()
-        defer { mutationEpoch &+= 1 }
-        let userURL = try requireUserURL()
-        // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
-        // record, not a partial patch, so reassigning the task means resending project/task too.
-        struct UpdateTimeslipBody: Encodable {
-            let project: String
-            let task: String
-            let user: String
-            let dated_on: String
-            let hours: String
-            let comment: String?
-        }
-        let updated: FreeAgentTimeslipDTO = try await apiClient.put(
-            id, envelopeKey: "timeslip",
-            body: UpdateTimeslipBody(
-                project: projectId, task: taskId, user: userURL,
-                dated_on: dateString(date), hours: String(hours), comment: comment
+        try await withMutation {
+            let userURL = try requireUserURL()
+            // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
+            // record, not a partial patch, so reassigning the task means resending project/task too.
+            struct UpdateTimeslipBody: Encodable {
+                let project: String
+                let task: String
+                let user: String
+                let dated_on: String
+                let hours: String
+                let comment: String?
+            }
+            let updated: FreeAgentTimeslipDTO = try await apiClient.put(
+                id, envelopeKey: "timeslip",
+                body: UpdateTimeslipBody(
+                    project: projectId, task: taskId, user: userURL,
+                    dated_on: dateString(date), hours: String(hours), comment: comment
+                )
             )
-        )
-        let resolved = resolvedTimeslip(updated, clientId: clientId)
-        // A PUT response that omits the `timer` object doesn't mean the timer stopped —
-        // FreeAgent doesn't always echo it back on this endpoint — so when this slip is the one
-        // actually running, carry its previously known start instant forward rather than letting
-        // a bare PUT null it out in the cache. Nothing reads `currentRunningTimeslip.
-        // timerStartedAt` today, but later reconciliation work reads from this same cache, so a
-        // silently dropped start instant here is a live trap for whichever of those ends up
-        // trusting it for elapsed time.
-        let reconciled: RatchetTimeslip
-        if resolved.timerStartedAt == nil, let stillRunning = currentRunningTimeslip, stillRunning.id == id,
-           let preserved = stillRunning.timerStartedAt {
-            reconciled = RatchetTimeslip(
-                id: resolved.id, clientId: resolved.clientId, projectId: resolved.projectId,
-                taskId: resolved.taskId, day: resolved.day, timerStartedAt: preserved,
-                hours: resolved.hours, comment: resolved.comment, isInvoiced: resolved.isInvoiced
-            )
-        } else {
-            reconciled = resolved
+            let resolved = resolvedTimeslip(updated, clientId: clientId)
+            // A PUT response that omits the `timer` object doesn't mean the timer stopped —
+            // FreeAgent doesn't always echo it back on this endpoint — so when this slip is the one
+            // actually running, carry its previously known start instant forward rather than letting
+            // a bare PUT null it out in the cache. `AppDelegate.restoreRunningTimer` reads
+            // `currentRunningTimeslip.timerStartedAt` as the elapsed-time baseline on every launch,
+            // login, manual refresh and silent refresh, so a silently dropped start instant here
+            // would re-base a running timer's displayed elapsed time to "now" the next time any of
+            // those adopts it.
+            let reconciled: RatchetTimeslip
+            if resolved.timerStartedAt == nil, let stillRunning = currentRunningTimeslip, stillRunning.id == id,
+               let preserved = stillRunning.timerStartedAt {
+                reconciled = resolved.withTimerStartedAt(preserved)
+            } else {
+                reconciled = resolved
+            }
+            // Replaced in place if still cached, rather than assuming it must be — an edit from a
+            // stale menu (built before the entry aged out of the `refresh()` window, or from a
+            // duplicate submenu still open after the underlying array changed) shouldn't silently
+            // reinsert a slip the local cache had already dropped.
+            if let index = timeslips.firstIndex(where: { $0.id == id }) {
+                timeslips[index] = reconciled
+            }
+            // `currentRunningTimeslip` is a separate stored property, not derived from `timeslips`
+            // — "Switch task" edits a *running* timeslip's task in place (see `StatusItemController.
+            // switchTask`) without stopping its timer, so without this the cache would keep
+            // pointing at the pre-edit task/project/client until the next `refresh()`.
+            if currentRunningTimeslip?.id == id {
+                currentRunningTimeslip = reconciled
+            }
+            return reconciled
         }
-        // Replaced in place if still cached, rather than assuming it must be — an edit from a
-        // stale menu (built before the entry aged out of the `refresh()` window, or from a
-        // duplicate submenu still open after the underlying array changed) shouldn't silently
-        // reinsert a slip the local cache had already dropped.
-        if let index = timeslips.firstIndex(where: { $0.id == id }) {
-            timeslips[index] = reconciled
-        }
-        // `currentRunningTimeslip` is a separate stored property, not derived from `timeslips`
-        // — "Switch task" edits a *running* timeslip's task in place (see `StatusItemController.
-        // switchTask`) without stopping its timer, so without this the cache would keep
-        // pointing at the pre-edit task/project/client until the next `refresh()`.
-        if currentRunningTimeslip?.id == id {
-            currentRunningTimeslip = reconciled
-        }
-        return reconciled
     }
 
     // MARK: - Private helpers
 
     private func resolvedTimeslip(_ dto: FreeAgentTimeslipDTO, using projectMap: [String: String], clientId: String? = nil) -> RatchetTimeslip {
         let resolvedClientId = clientId ?? projectMap[dto.project] ?? ""
-        let mapped = dto.toRatchetTimeslip()
-        return RatchetTimeslip(
-            id: mapped.id, clientId: resolvedClientId, projectId: mapped.projectId,
-            taskId: mapped.taskId, day: mapped.day, timerStartedAt: mapped.timerStartedAt,
-            hours: mapped.hours, comment: mapped.comment, isInvoiced: mapped.isInvoiced
-        )
+        return dto.toRatchetTimeslip().withClientId(resolvedClientId)
     }
 
     /// The committed-state resolver, for the mutating calls that run outside `refresh()`.
@@ -508,13 +540,24 @@ public final class FreeAgentDataStore: DataStore {
         resolvedTimeslip(dto, using: projectToClientId, clientId: clientId)
     }
 
-    private func withAppendedProject(_ client: RatchetClient, _ project: RatchetProject) -> RatchetClient {
-        client.withProjects(client.projects + [project])
+    private func withUpsertedProject(_ client: RatchetClient, _ project: RatchetProject) -> RatchetClient {
+        if let index = client.projects.firstIndex(where: { $0.id == project.id }) {
+            return client.replacingProject(at: index, with: project)
+        }
+        return client.withProjects(client.projects + [project])
     }
 
-    private func withAppendedTask(_ client: RatchetClient, projectIndex: Int, task: RatchetTask) -> RatchetClient {
+    private func withUpsertedTask(_ client: RatchetClient, projectIndex: Int, task: RatchetTask) -> RatchetClient {
         let existing = client.projects[projectIndex]
-        return client.replacingProject(at: projectIndex, with: existing.withTasks(existing.tasks + [task]))
+        let tasks: [RatchetTask]
+        if let index = existing.tasks.firstIndex(where: { $0.id == task.id }) {
+            var updated = existing.tasks
+            updated[index] = task
+            tasks = updated
+        } else {
+            tasks = existing.tasks + [task]
+        }
+        return client.replacingProject(at: projectIndex, with: existing.withTasks(tasks))
     }
 
     private func todayString() -> String { dateString(clock()) }

@@ -165,7 +165,10 @@ public struct RatchetClient: Identifiable, Equatable, Codable {
 
 public struct RatchetTimeslip: Identifiable, Equatable, Codable {
     public let id: String
-    public let clientId: String
+    /// `var` purely so `withClientId(_:)` can copy-and-replace without re-listing every other
+    /// field — see `RatchetProject.withTasks(_:)`. `FreeAgentDataStore` exposes timeslips only
+    /// through `private(set)` arrays, so this isn't a mutation route for callers.
+    public var clientId: String
     public let projectId: String
     public let taskId: String
     /// The calendar day this work is booked against — always local midnight of FreeAgent's
@@ -175,8 +178,9 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
     /// endpoint had last filled it in, and the elapsed-time display read midnight as a start.
     public let day: Date
     /// When the currently-running timer on this timeslip started, or nil if no timer is
-    /// running on it. The only correct baseline for elapsed time.
-    public let timerStartedAt: Date?
+    /// running on it. The only correct baseline for elapsed time. `var` for the same reason as
+    /// `clientId` above — see `withTimerStartedAt(_:)`.
+    public var timerStartedAt: Date?
     public let hours: Double
     public let comment: String?
     /// Whether FreeAgent has already billed this entry on an invoice. An invoiced entry is
@@ -196,6 +200,23 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
         self.hours = hours
         self.comment = comment
         self.isInvoiced = isInvoiced
+    }
+
+    /// A copy with a different client id. See `RatchetProject.withTasks(_:)` for why this copies
+    /// rather than re-invoking `init` — `RatchetTimeslip.init` defaults `timerStartedAt`,
+    /// `comment` and `isInvoiced`, so a hand-rolled copy that lists every field silently drops
+    /// any future defaulted field the copy forgot to carry forward.
+    public func withClientId(_ clientId: String) -> RatchetTimeslip {
+        var copy = self
+        copy.clientId = clientId
+        return copy
+    }
+
+    /// A copy with a different timer-start instant. See `withClientId(_:)` above.
+    public func withTimerStartedAt(_ timerStartedAt: Date?) -> RatchetTimeslip {
+        var copy = self
+        copy.timerStartedAt = timerStartedAt
+        return copy
     }
 }
 

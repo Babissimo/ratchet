@@ -133,6 +133,15 @@ final class FreeAgentDataStoreTests: XCTestCase {
     func test_startTimer_reusesExistingTimeslipForToday() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // Priming refresh() — requireUserURL() gates every startTimer/stopTimer/
+            // updateTimeslip/runningTimeslip call now, and currentUserURL is only ever set by a
+            // successful refresh(). "view=running" doubles as both refresh's own running-check
+            // and startTimer's — both want "nothing running" here.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             // The authoritative "is anything running at all" check startTimer now does first —
             // nothing running, so it falls through to the today-scoped search below.
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
@@ -143,8 +152,13 @@ final class FreeAgentDataStoreTests: XCTestCase {
             // response is wrapped as "timeslip", not "timer" like the request body — the timer
             // POST returns the updated timeslip, not a "timer" resource.
             (match: "/timeslips/55/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-11T10:00:00Z"}}}"#.utf8)),
+            // Refresh's own windowed "recent timeslips" fetch — kept last so the more specific
+            // "task="/"view=running" matches above win for the URLs that also contain "timeslips?".
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        transport.calls = []
 
         let result = try await store.startTimer(
             taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
@@ -174,9 +188,21 @@ final class FreeAgentDataStoreTests: XCTestCase {
         // POST, since it's already running.
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // Priming refresh() — see the comment on the previous test. This "view=running" body
+            // (already running for task 1) doubles as refresh's own running-check, so the store
+            // already has this timeslip cached before startTimer is called again — exactly the
+            // "app restart while the timer is still running" scenario this test exercises.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        transport.calls = []
 
         let result = try await store.startTimer(
             taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
@@ -203,9 +229,18 @@ final class FreeAgentDataStoreTests: XCTestCase {
         // time, not just when the cache is empty.
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // Priming refresh() — see the comment on the first startTimer test above.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-18","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-18T23:30:00Z"}}]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        transport.calls = []
 
         _ = try await store.startTimer(
             taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
@@ -255,9 +290,30 @@ final class FreeAgentDataStoreTests: XCTestCase {
         // silently stop the other task's timer to start this one.
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
-            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+            // Priming refresh() — see the comment on the first startTimer test above. Its own
+            // running-check must report *nothing* running (unlike this test's actual scenario)
+            // so it doesn't itself throw the same "another task" error before the test's own
+            // startTimer call gets a chance to.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            // Refresh's own running-check must report nothing running, so refresh() itself
+            // doesn't trip the same "another task" error before the test's own call gets to.
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        transport.calls = []
+
+        // Only now does the running-check report a different task running — inserted ahead of
+        // the "nothing running" rule above so it shadows it for the test's own startTimer call.
+        transport.responsesByPathSubstring.insert(
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
+            at: 0
+        )
 
         do {
             _ = try await store.startTimer(
@@ -266,8 +322,12 @@ final class FreeAgentDataStoreTests: XCTestCase {
                 clientId: "https://api.sandbox.freeagent.com/v2/contacts/1"
             )
             XCTFail("expected startTimer to throw when a different task is already running")
-        } catch DataStoreError.underlying {
-            // Expected.
+        } catch let error as DataStoreError {
+            // Pinned to the exact message, not just the case — `requireUserURL()`'s failure is
+            // also `.underlying`, and a bare `catch DataStoreError.underlying {}` let this test
+            // pass vacuously against the wrong error (and a call count of 0, not 1) once that
+            // guard started firing before a priming refresh.
+            XCTAssertEqual(error, DataStoreError.underlying("A timer is already running for another task elsewhere. Choose Refresh, then stop it from there."))
         } catch {
             XCTFail("expected DataStoreError.underlying, got \(error)")
         }
@@ -279,6 +339,12 @@ final class FreeAgentDataStoreTests: XCTestCase {
     func test_startTimer_createsTimeslipWhenNoneExistsForToday() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // Priming refresh() — see the comment on the first startTimer test above.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             // The authoritative "is anything running at all" check startTimer now does first.
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
             // Search finds nothing for today.
@@ -286,10 +352,15 @@ final class FreeAgentDataStoreTests: XCTestCase {
             // Starting the timer on the newly-created timeslip — wrapped as "timeslip" (see the
             // matching comment on the /timeslips/55/timer stub above).
             (match: "/timeslips/99/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-11T10:00:00Z"}}}"#.utf8)),
+            // Refresh's own windowed "recent timeslips" fetch — has a "?" (query params), so it's
+            // distinguished from the plain create-POST URL below by "timeslips?" vs "timeslips".
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
             // Fallback: the plain create-POST to "timeslips" (no query).
             (match: "timeslips", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/99","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"0.0","comment":null,"timer":null}}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        transport.calls = []
 
         let result = try await store.startTimer(
             taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
@@ -393,10 +464,20 @@ final class FreeAgentDataStoreTests: XCTestCase {
         // pointing at the pre-edit task/project/client until the next `refresh()`.
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // Priming refresh() — requireUserURL() gates startTimer and updateTimeslip both.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}]}"#.utf8)),
             (match: "/timeslips/55", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/55","project":"https://api.sandbox.freeagent.com/v2/projects/2","task":"https://api.sandbox.freeagent.com/v2/tasks/2","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-16","hours":"2.0","comment":null,"timer":{"running":true,"start_from":"2026-08-16T23:30:00Z"}}}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        transport.calls = []
+
         _ = try await store.startTimer(
             taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
             projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
@@ -420,20 +501,32 @@ final class FreeAgentDataStoreTests: XCTestCase {
     }
 
     func test_stopTimer_queriesServerAndReturnsNilWhenCacheIsEmptyAndNothingIsRunning() async throws {
-        // No `refresh()` here, so `currentRunningTimeslip` starts nil — the case the
-        // server-fallback in `stopTimer()` exists for (see its doc comment): an empty cache
-        // isn't proof nothing is running, so it must check before giving up.
+        // `stopTimer()` queries the server unconditionally, never trusting the cache either way
+        // — this covers the "cache empty" half of that: an empty `currentRunningTimeslip` isn't
+        // proof nothing is running (a timer could have started elsewhere since the last refresh),
+        // so stopTimer() must still check before reporting nothing to stop.
         let transport = StubTransport()
         transport.responsesByPathSubstring = [
+            // Priming refresh() — requireUserURL() gates stopTimer() too, since it resolves the
+            // running timeslip through the same server query as everything else.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
+        try await store.refresh()
+        XCTAssertNil(store.currentRunningTimeslip)
+        transport.calls = []
 
         let stopped = try await store.stopTimer()
 
         XCTAssertNil(stopped)
-        // Exactly one call — the fallback running-timeslip query — confirming the fallback
-        // fired rather than the old no-op path that never touched the network.
+        // Exactly one call after the priming refresh — the running-timeslip query — confirming
+        // stopTimer() checked the server itself rather than trusting the already-empty cache.
         XCTAssertEqual(transport.calls.count, 1)
         XCTAssertTrue(transport.calls[0].url!.absoluteString.contains("view=running"))
         tokenStore.clear()
@@ -446,12 +539,22 @@ final class FreeAgentDataStoreTests: XCTestCase {
         let transport = StubTransport()
         let today = CalendarDay.dayString(from: Date())
         transport.responsesByPathSubstring = [
+            // Priming refresh() — requireUserURL() gates startTimer now. "projects?"/"tasks?"
+            // (not the bare "projects"/"tasks" used elsewhere in this file) so these don't shadow
+            // the today-scoped search below, whose query embeds the task/project *URLs* — each of
+            // which contains the substrings "projects" and "tasks" in its own right.
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
             (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/1","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":null,"billed_on_invoice":null}]}"#.utf8)),
             (match: "/timer", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/1","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":null,"billed_on_invoice":null}}"#.utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)
         defer { tokenStore.clear() }
+        try await store.refresh()
 
         let started = try await store.startTimer(
             taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",

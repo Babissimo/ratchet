@@ -134,6 +134,17 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
         projectId: running.projectId, projectName: project?.name ?? "Unknown project",
         taskId: running.taskId, taskName: task?.name ?? "Unknown task"
     )
+    // `restoreRunningTimer` runs after *every* refresh — launch, login, manual "Refresh projects
+    // & tasks", and the ~2-minute silent refresh — so if the same still-nameless timer is already
+    // being tracked, re-adopting it here would call `startTracking` again on every one of those,
+    // and `startTracking` unconditionally overwrites `trackingStartedAt`. That re-bases the
+    // elapsed clock to "now" each time, so the displayed time would reset to 0:00 roughly every
+    // two minutes instead of climbing — worse than the old bug (which was at least stable, just
+    // wrong). Stamp the best-guess start instant once, on first adoption, and leave it alone on
+    // every subsequent call that finds the same task already being tracked.
+    if running.timerStartedAt == nil, appState.trackingTask == ref {
+        return
+    }
     // A timeslip the running-view query returned but that carries no timer start is a response
     // Ratchet can't date; counting from adoption undercounts, which is strictly safer than the
     // old midnight fallback's wild overcount.
