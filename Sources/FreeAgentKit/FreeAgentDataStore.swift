@@ -8,6 +8,7 @@ public final class FreeAgentDataStore: DataStore {
     public private(set) var accountEmail: String = ""
     public private(set) var timeslips: [RatchetTimeslip] = []
     public private(set) var lastRefreshedAt: Date?
+    public private(set) var hasLocalWritesSinceRefresh: Bool = false
     public private(set) var currentRunningTimeslip: RatchetTimeslip?
     /// The signed-in company's own web app URL (e.g. https://acebusiness.sandbox.freeagent.com),
     /// for "Open FreeAgent" — nil until the first successful `refresh()`.
@@ -61,7 +62,12 @@ public final class FreeAgentDataStore: DataStore {
     /// omit the `defer` with no compiler error and silently reopen the race this guards against.
     private func withMutation<T>(_ body: () async throws -> T) async rethrows -> T {
         mutationEpoch &+= 1
-        defer { mutationEpoch &+= 1 }
+        defer {
+            mutationEpoch &+= 1
+            // On exit, so a refresh committing mid-mutation can't clear it, and on throw too,
+            // since a write that failed partway may still have changed server state.
+            hasLocalWritesSinceRefresh = true
+        }
         return try await body()
     }
 
@@ -187,10 +193,29 @@ public final class FreeAgentDataStore: DataStore {
         timeslips = newTimeslips
         currentRunningTimeslip = newRunning
         lastRefreshedAt = clock()
+        hasLocalWritesSinceRefresh = false
     }
 
+    /// The last `startTimer` call queued. Starts run one at a time: two at once can each find no
+    /// timeslip for today and create one apiece, leaving both billing.
+    private var lastStart: Task<RatchetTimeslip, Error>?
+
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
-        try await withMutation {
+        let previous = lastStart
+        let start = Task { [self] in
+            _ = try? await previous?.value
+            return try await performStartTimer(taskId: taskId, projectId: projectId, clientId: clientId)
+        }
+        lastStart = start
+        return try await start.value
+    }
+
+    private func performStartTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        // The idle screen offers the remembered task before the launch refresh lands, so a start
+        // can arrive before the account is known. Join or run that refresh first, outside the
+        // mutation: the mutation's epoch bump would make the refresh discard its own result.
+        if currentUserURL.isEmpty { try await refresh() }
+        return try await withMutation {
             let userURL = try requireUserURL()
             // Ask the server first, same as stopTimer()'s unconditional check: the today-scoped
             // "existing timeslip for this task" query below only finds a timeslip *created* today, not one
@@ -296,7 +321,22 @@ public final class FreeAgentDataStore: DataStore {
             }
             try await apiClient.delete("\(running.id)/timer")
             currentRunningTimeslip = nil
-            return running
+
+            // Re-read rather than reuse `running`: a running timeslip's `hours` reflects the last
+            // pause, so only the stopped one carries the real total.
+            let stopped: RatchetTimeslip
+            if let settled: FreeAgentTimeslipDTO = try? await apiClient.get(running.id, envelopeKey: "timeslip") {
+                stopped = resolvedTimeslip(settled, clientId: running.clientId).withTimerStartedAt(nil)
+            } else {
+                // The stop itself succeeded, so a failed read-back must not report it as an error.
+                // The hours stay understated until the next refresh, which this write forces.
+                stopped = running.withTimerStartedAt(nil)
+            }
+            // Into the cache now rather than at the next refresh: `startTimer` creates today's
+            // timeslip on demand, so one started and stopped between refreshes exists nowhere
+            // else locally, and "Recent time entries" is built from this cache.
+            upsertKeepingDayOrder(stopped)
+            return stopped
         }
     }
 
@@ -490,7 +530,7 @@ public final class FreeAgentDataStore: DataStore {
             // A PUT response that omits the `timer` object doesn't mean the timer stopped —
             // FreeAgent doesn't always echo it back on this endpoint — so when this slip is the one
             // actually running, carry its previously known start instant forward rather than letting
-            // a bare PUT null it out in the cache. `AppDelegate.restoreRunningTimer` reads
+            // a bare PUT null it out in the cache. `AppState.reconcile(with:)` reads
             // `currentRunningTimeslip.timerStartedAt` as the elapsed-time baseline on every launch,
             // login, manual refresh and silent refresh, so a silently dropped start instant here
             // would re-base a running timer's displayed elapsed time to "now" the next time any of

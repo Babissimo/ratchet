@@ -12,6 +12,13 @@ public protocol DataStore: AnyObject {
     var accountEmail: String { get }
     var timeslips: [RatchetTimeslip] { get }
     var lastRefreshedAt: Date? { get }
+    /// True when a local write has landed that no completed `refresh()` has yet reconciled.
+    ///
+    /// `lastRefreshedAt` alone can't answer "is what I'm showing current?", because it only
+    /// moves on a refresh: a start, stop, switch or logged entry changes server state while
+    /// leaving it untouched. `StatusItemController`'s 120-second staleness gate consults this
+    /// alongside the timestamp, so a write always forces the next refresh through.
+    var hasLocalWritesSinceRefresh: Bool { get }
     /// The timeslip whose timer is currently running, if any; nil when nothing is. FreeAgent
     /// doesn't live-update a running timeslip's `hours` — it only reflects hours as of the last
     /// pause — so `MenuBuilder.buildRecentTimeEntriesSubmenu` excludes this entry rather than

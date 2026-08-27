@@ -399,18 +399,38 @@ final class FreeAgentDataStoreTests: XCTestCase {
         try await store.refresh()
         XCTAssertEqual(store.currentRunningTimeslip?.id, "https://api.sandbox.freeagent.com/v2/timeslips/77")
 
-        // Stub the DELETE call the running timeslip's timer stop makes.
-        transport.responsesByPathSubstring.insert(
-            (match: "/timeslips/77/timer", status: 200, body: Data()), at: 0
-        )
+        // Stopping hits timeslip 77 twice: the DELETE that stops the timer, then a read-back of
+        // the bare resource. Order matters and is not interchangeable — `send` takes the first
+        // rule whose substring occurs in the URL, and "/timeslips/77" occurs in the DELETE's URL
+        // as well, so the reverse order would answer the DELETE with the settled body.
+        transport.responsesByPathSubstring.insert(contentsOf: [
+            (match: "/timeslips/77/timer", status: 200, body: Data()),
+            // Higher hours than the running fixture's 1.5, and no timer object: FreeAgent leaves
+            // a running timeslip's `hours` at its last pause, so the stop is the first moment the
+            // server holds the real total. That gap is the entire reason for the read-back.
+            (match: "/timeslips/77", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/77","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-11","hours":"2.25","comment":null,"timer":null,"billed_on_invoice":null}}"#.utf8)),
+        ], at: 0)
 
         let stopped = try await store.stopTimer()
 
         XCTAssertEqual(stopped?.id, "https://api.sandbox.freeagent.com/v2/timeslips/77")
+        // The settled total from the read-back, not the 1.5 the running copy still reported, and
+        // no start instant left behind for the elapsed-time display to count up from.
+        XCTAssertEqual(stopped?.hours, 2.25)
+        XCTAssertNil(stopped?.timerStartedAt)
         XCTAssertNil(store.currentRunningTimeslip)
-        let deleteCall = transport.calls.last!
+        // A timeslip started and stopped between two refreshes exists nowhere else locally, and
+        // "Recent time entries" is built from this cache — so it has to land here immediately.
+        XCTAssertEqual(store.timeslips.map(\.id), ["https://api.sandbox.freeagent.com/v2/timeslips/77"])
+        XCTAssertEqual(store.timeslips.first?.hours, 2.25)
+        // Indexed from the end rather than `.last`, which is the read-back: the DELETE has to
+        // come first, since a read-back issued before the stop would capture the stale hours.
+        let deleteCall = transport.calls[transport.calls.count - 2]
         XCTAssertEqual(deleteCall.httpMethod, "DELETE")
         XCTAssertTrue(deleteCall.url!.absoluteString.contains("/timeslips/77/timer"))
+        let readBack = transport.calls.last!
+        XCTAssertEqual(readBack.httpMethod, "GET")
+        XCTAssertEqual(readBack.url!.absoluteString, "https://api.sandbox.freeagent.com/v2/timeslips/77")
         tokenStore.clear()
     }
 
@@ -611,6 +631,11 @@ final class FreeAgentDataStoreTests: XCTestCase {
             (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
             (match: "view=running", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
             (match: "timeslips/9/timer", status: 200, body: Data("{}".utf8)),
+            // The read-back stopTimer does once the DELETE lands, for the hours the server
+            // settled on. Kept immediately after the "/timer" rule above and before the
+            // "timeslips?" one: `send` takes the first substring match, so this rule would
+            // otherwise swallow the DELETE's URL, which contains "timeslips/9" too.
+            (match: "timeslips/9", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/9","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.75","comment":null,"timer":null,"billed_on_invoice":null}}"#.utf8)),
             (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
             (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
             (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
@@ -632,12 +657,18 @@ final class FreeAgentDataStoreTests: XCTestCase {
             XCTFail("refresh's view=running request never hit the gate — the interleaving this test exercises did not happen")
             return
         }
-        _ = try await store.stopTimer()
+        let stopped = try await store.stopTimer()
+        XCTAssertEqual(stopped?.hours, 0.75)
+        XCTAssertNil(stopped?.timerStartedAt)
         XCTAssertNil(store.currentRunningTimeslip)
         transport.release()
         _ = await inFlight.value
 
         XCTAssertNil(store.currentRunningTimeslip, "the stale in-flight refresh must not resurrect the stopped timer")
+        // The same staleness reaches the cached entry: the refresh's window fetch still describes
+        // timeslip 9 as running with 0.0 hours, so committing it would undo the settled total too.
+        XCTAssertEqual(store.timeslips.map(\.hours), [0.75])
+        XCTAssertNil(store.timeslips.first?.timerStartedAt)
     }
 
     func test_stopTimer_stopsWhatIsActuallyRunningNotWhatWasCached() async throws {
@@ -657,6 +688,11 @@ final class FreeAgentDataStoreTests: XCTestCase {
             (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
             (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
             (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            // Catches both per-timeslip calls the stop makes: the DELETE, whose body is ignored,
+            // and the settled-hours read-back after it. `{}` has no "timeslip" envelope, so the
+            // read-back's decode fails and stopTimer takes its pre-stop-copy fallback — which is
+            // what this test wants, since the identity of the stopped timeslip is its subject and
+            // the fallback preserves it. Don't drop this rule: an unmatched URL is a fatalError.
             (match: "timeslips/", status: 200, body: Data("{}".utf8)),
         ]
         let (store, tokenStore) = makeStore(transport: transport)

@@ -6,16 +6,9 @@ import AppKit
 public final class StatusItemController {
     public typealias LoginHandler = () async throws -> Void
 
-    /// Called after a login's follow-up `refresh()` succeeds, to adopt whatever timer FreeAgent
-    /// says is already running. Injected because "which timeslip is running" lives on the
-    /// concrete `FreeAgentDataStore`, not on the `DataStore` protocol — see
-    /// `restoreRunningTimer(from:into:)` in the app target, which both this and the launch-time
-    /// restore in `AppDelegate` call.
-    public typealias RestoreRunningTimerHandler = () -> Void
-
     /// The actual `SMAppService.mainApp.register()`/`.unregister()` call. Injected rather than
     /// called directly here because `ServiceManagement` is a system side effect on par with
-    /// `performLogin`/`restoreRunningTimer` above — `RatchetCore` stays a place that only
+    /// `performLogin` above — `RatchetCore` stays a place that only
     /// describes what should happen, and the executable target (which already owns the other
     /// real-world calls) supplies how.
     ///
@@ -30,7 +23,6 @@ public final class StatusItemController {
     private let appState: AppState
     private let dataStore: DataStore
     private let performLogin: LoginHandler
-    private let restoreRunningTimer: RestoreRunningTimerHandler
     private let setLaunchAtLogin: SetLaunchAtLoginHandler
     private var elapsedTimer: Timer?
     private weak var elapsedMenuItem: NSMenuItem?
@@ -63,7 +55,6 @@ public final class StatusItemController {
         dataStore: DataStore,
         statusBar: NSStatusBar = .system,
         performLogin: @escaping LoginHandler = {},
-        restoreRunningTimer: @escaping RestoreRunningTimerHandler = {},
         setLaunchAtLogin: @escaping SetLaunchAtLoginHandler = { _ in false },
         now: @escaping () -> Date = Date.init
     ) {
@@ -71,7 +62,6 @@ public final class StatusItemController {
         self.dataStore = dataStore
         self.statusItem = statusBar.statusItem(withLength: NSStatusItem.squareLength)
         self.performLogin = performLogin
-        self.restoreRunningTimer = restoreRunningTimer
         self.setLaunchAtLogin = setLaunchAtLogin
         self.now = now
         appState.onChange = { [weak self] in self?.rebuild() }
@@ -136,7 +126,7 @@ public final class StatusItemController {
                     // Same restore the launch path does — without this, logging out and back in
                     // while a FreeAgent timer runs showed idle, while quit-and-relaunch showed
                     // tracking, from identical server state.
-                    self.restoreRunningTimer()
+                    self.appState.reconcile(with: self.dataStore)
                     self.rebuild()
                     self.presentLoginSucceeded()
                 } catch where error.indicatesLoginCancelled {
@@ -228,7 +218,7 @@ public final class StatusItemController {
                     // elsewhere (the FreeAgent web app, another device) after this app was already
                     // logged in never appeared here even after a manual refresh, because
                     // dataStore.currentRunningTimeslip updating doesn't by itself touch appState.
-                    self.restoreRunningTimer()
+                    self.appState.reconcile(with: self.dataStore)
                     self.rebuild()
                 } catch {
                     self.presentAPIError(error, action: "refresh")
@@ -290,8 +280,8 @@ public final class StatusItemController {
 
     /// Drops local session state and clears stored credentials via `onLogOut`. The single place
     /// "log out" happens, so the menu-driven Log Out and the forced logout below can't diverge.
-    private func performLogOut() {
-        appState.logOut()
+    private func performLogOut(forgettingMostRecent: Bool = true) {
+        appState.logOut(forgettingMostRecent: forgettingMostRecent)
         onLogOut?()
     }
 
@@ -316,13 +306,17 @@ public final class StatusItemController {
     /// Exposed so `AppDelegate`'s launch-time restore can route an `.unauthorized` here rather
     /// than swallowing it and leaving a logged-in-looking, permanently empty menu.
     public func handleSessionExpired() {
+        // Callers sharing one failed refresh each report it, and the user should hear it once.
+        guard appState.isLoggedIn else { return }
         // Unlike a routine silent-refresh success, this is already maximally disruptive — a
         // modal alert is about to steal focus and force the user out of whatever they were
         // doing. There's no "next open" to defer to here (and the modal makes the still-open
         // native menu moot regardless), so this bypasses `rebuild()`'s isMenuOpen guard rather
         // than leaving the menu showing stale logged-in content behind/under the alert.
         isMenuOpen = false
-        performLogOut()
+        // The same account usually signs straight back in, so its task is kept for it;
+        // `reconcile(with:)` drops the task if a different account signs in instead.
+        performLogOut(forgettingMostRecent: false)
         rebuild()
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -407,7 +401,7 @@ public final class StatusItemController {
         // it a freshly built replacement here would repoint `elapsedMenuItem` at a menu nobody's
         // looking at, and the live elapsed-time line would silently stop updating for the rest of
         // that open session (see `updateTimer()`). Skip the whole rebuild rather than guard just
-        // `statusItem.menu`, since `restoreRunningTimer()` can itself trigger a further `rebuild()`
+        // `statusItem.menu`, since `appState.reconcile(with:)` can itself trigger a further `rebuild()`
         // via `appState.onChange` — this one guard covers every rebuild source while open. The
         // next open is unaffected: `menuDidClose` below runs a catch-up `rebuild()` the moment
         // the menu closes, once `isMenuOpen` is false again, so by the time the user reopens it
@@ -423,9 +417,98 @@ public final class StatusItemController {
             elapsedMenuItem = nil
         }
         lastRefreshedMenuItem = menu.item(withTitle: "Settings")?.submenu.flatMap(MenuBuilder.refreshItem(in:))
+        attachLazySubmenuDelegates(to: menu)
         updateIcon()
         updateTooltip()
         updateTimer()
+    }
+
+    /// Repopulates a submenu from current `dataStore` contents each time AppKit is about to show
+    /// it, so a refresh that lands while the menu is open is visible in it. `rebuild()` can't do
+    /// that: it skips while `isMenuOpen`, since a new NSMenu would strand `elapsedMenuItem` and
+    /// freeze the elapsed-time line. The top-level rows stay as they were for the rest of that
+    /// open, until `menuDidClose`'s catch-up `rebuild()`.
+    private final class LazySubmenuDelegate: NSObject, NSMenuDelegate {
+        private let populate: (NSMenu) -> Void
+
+        init(populate: @escaping (NSMenu) -> Void) {
+            self.populate = populate
+        }
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            populate(menu)
+        }
+    }
+
+    /// `NSMenu.delegate` is `weak`, so the delegates have to outlive the call that installs them.
+    /// Replaced wholesale on each `rebuild()`, which discards the previous menu's along with it.
+    private var lazySubmenuDelegates: [LazySubmenuDelegate] = []
+
+    /// Points the store-driven submenus at `LazySubmenuDelegate` so each rebuilds on open.
+    /// Settings is deliberately excluded: `silentlyRefreshIfStale()` holds a `lastRefreshedMenuItem`
+    /// reference into it and updates that row in place (including the transient "Refreshing…"),
+    /// which a repopulate would throw away mid-flight.
+    private func attachLazySubmenuDelegates(to menu: NSMenu) {
+        lazySubmenuDelegates = []
+        let builders: [String: () -> NSMenu] = [
+            "Start timer": { [weak self] in
+                guard let self else { return NSMenu() }
+                // The converse of "Switch task" below: a mid-open refresh that adopts a timer
+                // started elsewhere leaves the idle screen's picker on show, and starting a
+                // different task from it would fail server-side.
+                if case .tracking = self.appState.screen {
+                    return Self.notice("A timer is already running")
+                }
+                return MenuBuilder.buildStartSubmenu(dataStore: self.dataStore, actions: self.actions)
+            },
+            "Log past time": { [weak self] in
+                guard let self else { return NSMenu() }
+                return MenuBuilder.buildLogPastTimeSubmenu(dataStore: self.dataStore, actions: self.actions)
+            },
+            "Recent time entries": { [weak self] in
+                guard let self else { return NSMenu() }
+                return MenuBuilder.buildRecentTimeEntriesSubmenu(dataStore: self.dataStore, actions: self.actions)
+            },
+            "Switch task": { [weak self] in
+                guard let self else { return NSMenu() }
+                // A mid-open refresh can find the timer stopped elsewhere, leaving this row on
+                // screen with nothing to switch; an empty NSMenu would render as a blank popup.
+                guard case .tracking(let task, _) = self.appState.screen else {
+                    return Self.notice("Timer is no longer running")
+                }
+                return MenuBuilder.buildSwitchTaskSubmenu(
+                    dataStore: self.dataStore, actions: self.actions, currentTaskId: task.taskId
+                )
+            },
+        ]
+        for (title, build) in builders {
+            guard let submenu = menu.item(withTitle: title)?.submenu else { continue }
+            let delegate = LazySubmenuDelegate { menu in
+                Self.replaceItems(of: menu, withThoseOf: build())
+            }
+            submenu.delegate = delegate
+            lazySubmenuDelegates.append(delegate)
+        }
+    }
+
+    /// A submenu holding one disabled row, for a picker the state has moved on from.
+    private static func notice(_ title: String) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(MenuBuilder.disabledItem(title))
+        return menu
+    }
+
+    /// Moves `fresh`'s items into `menu`, so the displayed NSMenu instance keeps its identity
+    /// (AppKit is already showing it) while its contents are replaced. The items have to be
+    /// *removed* from `fresh` first — an NSMenuItem can only belong to one menu, and adding one
+    /// that still has a `menu` back-pointer is undefined.
+    private static func replaceItems(of menu: NSMenu, withThoseOf fresh: NSMenu) {
+        menu.removeAllItems()
+        for item in fresh.items {
+            fresh.removeItem(item)
+            menu.addItem(item)
+        }
     }
 
     /// `NSMenu.delegate` is an Objective-C protocol, so forwarding `menuWillOpen`/`menuDidClose`
@@ -486,7 +569,11 @@ public final class StatusItemController {
         // session expired" alert on every menu open and wake. Mirrors `AppDelegate`'s
         // `if tokenStore.load() != nil` guard on the launch-time refresh, same reasoning.
         guard appState.isLoggedIn else { return }
-        if let lastRefreshedAt = dataStore.lastRefreshedAt,
+        // A local write since the last refresh means the cache is known-stale regardless of how
+        // recently it was fetched, so the age check doesn't get to skip this — see
+        // `DataStore.hasLocalWritesSinceRefresh`.
+        if !dataStore.hasLocalWritesSinceRefresh,
+           let lastRefreshedAt = dataStore.lastRefreshedAt,
            now().timeIntervalSince(lastRefreshedAt) < Self.staleRefreshThreshold {
             return
         }
@@ -508,7 +595,7 @@ public final class StatusItemController {
                 // Same adoption the manual refresh and launch/login paths do — without this, a
                 // timer started or stopped elsewhere wouldn't show up even after this silent
                 // refresh succeeds.
-                self.restoreRunningTimer()
+                self.appState.reconcile(with: self.dataStore)
                 // A menu open in progress must not have its live elapsed-time line yanked out
                 // from under it — see the guard inside `rebuild()`. But this row isn't
                 // menu-instance-dependent the way `elapsedMenuItem` is, so it's updated in place

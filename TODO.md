@@ -161,7 +161,7 @@ that constraint; each item notes what it costs to skip signing.
     stub returning `"running":false` on that endpoint.
   - `updateTimeslip` carrying the cached `timerStartedAt` forward when the
     PUT response omits the timer object for the entry that's running. This
-    guards the elapsed-time baseline `restoreRunningTimer` reads on every
+    guards the elapsed-time baseline `AppState.reconcile(with:)` reads on every
     refresh, so a regression would re-base a running timer's clock to now.
   - The interleaving the two-edge `mutationEpoch` bump exists to close: a
     refresh that *starts* after a mutation's entry bump and would otherwise

@@ -12,6 +12,11 @@ final class FakeDataStore: DataStore {
     var refreshError: Error?
     private(set) var timeslips: [RatchetTimeslip] = []
     private(set) var lastRefreshedAt: Date?
+    /// Mirrors `FreeAgentDataStore`: every mutating method below sets this, and `refresh()`
+    /// clears it. `StatusItemController`'s staleness gate reads it, so a fake that left it
+    /// permanently false would make the "a local write forces the next refresh" behaviour
+    /// untestable.
+    private(set) var hasLocalWritesSinceRefresh = false
     let webAppURL: URL? = URL(string: "https://app.freeagent.com")
 
     /// id of the timeslip with a currently-running timer, if any.
@@ -63,6 +68,7 @@ final class FakeDataStore: DataStore {
         billingRate: Double? = nil,
         billingPeriod: BillingPeriod? = nil
     ) async throws -> RatchetTask {
+        hasLocalWritesSinceRefresh = true
         guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
         guard let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId }) else { throw DataStoreError.notFound }
 
@@ -91,6 +97,7 @@ final class FakeDataStore: DataStore {
         postcode: String? = nil,
         country: String? = nil
     ) async throws -> RatchetClient {
+        hasLocalWritesSinceRefresh = true
         // Mirrors FreeAgentContactDTO.displayName, for the same reason the fake mirrors the
         // real store's timer-reuse semantics: a fake that names clients differently from the
         // real one lets a display-name regression pass its tests.
@@ -126,6 +133,7 @@ final class FakeDataStore: DataStore {
         startsOn: Date? = nil,
         endsOn: Date? = nil
     ) async throws -> RatchetProject {
+        hasLocalWritesSinceRefresh = true
         guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
 
         let newProject = RatchetProject(
@@ -156,6 +164,7 @@ final class FakeDataStore: DataStore {
         hours: Double,
         comment: String? = nil
     ) async throws -> RatchetTimeslip {
+        hasLocalWritesSinceRefresh = true
         guard let client = clients.first(where: { $0.id == clientId }),
               let project = client.projects.first(where: { $0.id == projectId }),
               project.tasks.contains(where: { $0.id == taskId })
@@ -183,6 +192,7 @@ final class FakeDataStore: DataStore {
         hours: Double,
         comment: String? = nil
     ) async throws -> RatchetTimeslip {
+        hasLocalWritesSinceRefresh = true
         guard let index = timeslips.firstIndex(where: { $0.id == id }) else { throw DataStoreError.notFound }
         guard let client = clients.first(where: { $0.id == clientId }),
               let project = client.projects.first(where: { $0.id == projectId }),
@@ -203,9 +213,11 @@ final class FakeDataStore: DataStore {
         }
         refreshCount += 1
         lastRefreshedAt = clock()
+        hasLocalWritesSinceRefresh = false
     }
 
     func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        hasLocalWritesSinceRefresh = true
         guard let client = clients.first(where: { $0.id == clientId }),
               let project = client.projects.first(where: { $0.id == projectId }),
               project.tasks.contains(where: { $0.id == taskId })
@@ -244,12 +256,7 @@ final class FakeDataStore: DataStore {
             // elapsed baseline on every call, including a second `startTimer` for a task that
             // was already running — which production does not do.
             let alreadyRunning = runningTimeslipId == existing.id
-            let resumed = RatchetTimeslip(
-                id: existing.id, clientId: existing.clientId, projectId: existing.projectId,
-                taskId: existing.taskId, day: existing.day,
-                timerStartedAt: alreadyRunning ? existing.timerStartedAt : clock(),
-                hours: existing.hours, comment: existing.comment, isInvoiced: existing.isInvoiced
-            )
+            let resumed = existing.withTimerStartedAt(alreadyRunning ? existing.timerStartedAt : clock())
             timeslips[index] = resumed
             runningTimeslipId = resumed.id
             return resumed
@@ -273,18 +280,16 @@ final class FakeDataStore: DataStore {
     }
 
     func stopTimer() async throws -> RatchetTimeslip? {
+        hasLocalWritesSinceRefresh = true
         guard let runningTimeslipId, let index = timeslips.firstIndex(where: { $0.id == runningTimeslipId }) else {
             return nil
         }
-        // Mirrors FreeAgentDataStore.stopTimer: it DELETEs the timer and forgets
-        // `currentRunningTimeslip`, but never re-resolves or rewrites the slip itself, so the
-        // returned (and cached) value keeps its stale `timerStartedAt` from when it was running.
-        // A test asserting `timerStartedAt == nil` after stop would pass here and fail against
-        // production, so this deliberately does *not* clear it — `runningTimeslipId` (here) /
-        // `currentRunningTimeslip` (there) is the only reliable "is this still running" signal;
-        // a stopped slip's leftover `timerStartedAt` must never be read as proof of the opposite.
+        // Mirrors FreeAgentDataStore.stopTimer's write-back with the timer cleared. The hours the
+        // real store picks up from the server have no equivalent here; `Antagonise` covers them.
+        let stopped = timeslips[index].withTimerStartedAt(nil)
+        timeslips[index] = stopped
         self.runningTimeslipId = nil
-        return timeslips[index]
+        return stopped
     }
 
     /// Lets a test model a server whose running timeslip has drifted from this fake's cache —
