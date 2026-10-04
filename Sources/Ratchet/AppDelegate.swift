@@ -31,10 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState: appState,
             dataStore: dataStore,
             performLogin: { [urlSchemeHandler, tokenStore] in
-                let (authorizeURL, expectedState) = authenticator.buildAuthorizeURL()
-                NSWorkspace.shared.open(authorizeURL)
-                let callbackURL = try await urlSchemeHandler.waitForCallback(timeout: 180)
-                let tokens = try await authenticator.handleCallback(url: callbackURL, expectedState: expectedState)
+                let request = authenticator.makeAuthorizationRequest()
+                NSWorkspace.shared.open(request.url)
+                let callbackURL = try await urlSchemeHandler.waitForCallback(state: request.state, timeout: 180)
+                let tokens = try await authenticator.handleCallback(url: callbackURL, for: request)
                 guard tokenStore.save(tokens) else { throw FreeAgentError.credentialStorageFailed }
             },
             restoreRunningTimer: { restoreRunningTimer(from: dataStore, into: appState) },

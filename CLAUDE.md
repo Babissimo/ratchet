@@ -47,11 +47,15 @@ Two things partly close the gap, and both are worth running before claiming a ch
 
 Installing Xcode and running `xcode-select -s /Applications/Xcode.app` restores `swift test`.
 
-## Local setup
+## Sign-in and environments
 
-`Sources/FreeAgentKit/Secrets.swift` is gitignored and required to compile `FreeAgentKit`. Copy
-`Secrets.swift.example` next to it and fill in credentials from the FreeAgent Developer
-Dashboard. A fresh clone or a new git worktree will not build until this exists.
+The app carries no FreeAgent credentials, so a fresh clone builds as is. Sign-in starts at, and
+every token request goes to, Ratchet's sign-in service (`worker/`, a Cloudflare Worker at
+`auth.ratchet.babissimo.net`), which holds the client ID and secret. Test it with
+`npm test` in `worker/`; `worker/README.md` covers deploying it.
+
+Builds target FreeAgent production. Build with `-Xswiftc -DFREEAGENT_SANDBOX` (or
+`FREEAGENT_SANDBOX=1 scripts/build-app.sh debug`) to target the sandbox instead.
 
 ## App bundle
 
@@ -67,13 +71,15 @@ That assembles `.build/Ratchet.app` around the built binary and registers it wit
 
 ## Layout
 
-- `RatchetCore` — models, `AppState`, `MenuBuilder`, `StatusItemController`, `RatchetIcon`. No
+- `RatchetCore`: models, `AppState`, `MenuBuilder`, `StatusItemController`, `RatchetIcon`. No
   FreeAgent dependency; the dependency runs the other way.
-- `FreeAgentKit` — API client, OAuth, Keychain, DTOs, `FreeAgentDataStore`.
-- `Ratchet` — the executable: `AppDelegate`, `URLSchemeHandler`, `main.swift`.
-- `IconExporter` — dev-only tool that renders the app icon. Not shipped in the bundle.
-- `Antagonise` — dev-only regression harness for local/remote state divergence (see "Building
+- `FreeAgentKit`: API client, OAuth, Keychain, DTOs, `FreeAgentDataStore`.
+- `Ratchet`, the executable: `AppDelegate`, `URLSchemeHandler`, `main.swift`.
+- `IconExporter`: dev-only tool that renders the app icon. Not shipped in the bundle.
+- `Antagonise`: dev-only regression harness for local/remote state divergence (see "Building
   and testing" above). Not shipped in the bundle.
+- `worker/`: the sign-in service (see "Sign-in and environments" above). JavaScript, not part
+  of the Swift package.
 
 ## Conventions
 

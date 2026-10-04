@@ -139,10 +139,12 @@ public final class StatusItemController {
                     self.restoreRunningTimer()
                     self.rebuild()
                     self.presentLoginSucceeded()
+                } catch where error.indicatesLoginCancelled {
+                    // The user declined; they know it didn't finish.
                 } catch {
                     // Not `presentAPIError`: there's no session yet to have expired, so a 401 here
-                    // (wrong/rejected client credentials, a PKCE mismatch) must not be described as
-                    // one — "Ratchet signed you out" would be a lie about someone never signed in.
+                    // must not be described as one — "Ratchet signed you out" would be a lie about
+                    // someone never signed in.
                     self.presentLoginFailedError(error)
                 }
             }

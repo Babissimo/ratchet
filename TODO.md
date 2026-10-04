@@ -1,9 +1,7 @@
 # Ratchet — path to a polished, distributable app
 
-Roadmap for turning the current sandbox-only, locally-run build into
-something installable via Homebrew and usable by people other than the
-developer. Nothing here is required for personal day-to-day use — the app
-already works end to end against the FreeAgent sandbox.
+Roadmap for turning the current locally-run build into something
+installable via Homebrew and usable by people other than the developer.
 
 ## Decided: no paid Apple Developer Program membership ($99/yr)
 
@@ -12,38 +10,26 @@ that constraint; each item notes what it costs to skip signing.
 
 ## Free things that fix real problems now
 
-- [ ] **Switch OAuth to PKCE, stop embedding the client secret — tried,
-  reverted.** Implemented RFC 7636 PKCE (`code_verifier`/`code_challenge`
-  on the authorize URL, no `Authorization: Basic`) and live-tested it
-  against the real FreeAgent sandbox: every token exchange came back
-  `invalid_grant`. FreeAgent's OAuth app registration is a
-  confidential-client type — it doesn't recognize PKCE and still
-  requires the client secret regardless. Reverted to
-  `Authorization: Basic` with `clientID`/`clientSecret` (both files back
-  to documenting/requiring `clientSecret`). Leaving this open in case
-  FreeAgent ever adds a public-client/PKCE app registration type — until
-  then, the client secret in the compiled binary is a real, accepted
-  limitation of a solo/small-scale unsigned distribution rather than
-  something fixable from this side alone.
+- [x] **No client secret in the app.** FreeAgent registers only
+  confidential OAuth clients (PKCE was live-tested and rejected), and its
+  API terms (5.5.1) forbid hardcoding credentials into an app. The client
+  ID and secret live in a Cloudflare Worker instead (`worker/`,
+  `auth.ratchet.babissimo.net`), which runs sign-in and refreshes and adds
+  the credentials. Sign-in runs in the default browser, and the Worker
+  stands in for PKCE so a callback intercepted on its way back through
+  `ratchet://` is useless. Live-tested against production.
 
-- [x]/[ ] **Production FreeAgent environment support.**
-  `FreeAgentEnvironment.production` exists (`api.freeagent.com` URLs).
-  `AppDelegate.swift` now reads `FreeAgentEnvironment.configured`, which
-  resolves to `FreeAgentSecrets.environment` — the environment lives next to
-  the client ID/secret it's paired with, in the same gitignored
-  `Secrets.swift`, so a sandbox credential pair can't accidentally get
-  wired to `.production` or vice versa. `Secrets.swift.example` and the
-  local `Secrets.swift` both default to `.sandbox`;
-  `.github/workflows/release.yml` generates `.production` for release
-  builds. Live-tested: flipping the local `Secrets.swift` to
-  `.production` and logging in against the real FreeAgent account
-  succeeded first try — the existing OAuth app (already connected to
-  the account) isn't sandbox-gated, so no separate production app
-  registration is needed after all. Remaining work is just plumbing:
-  add the *same* client ID/secret as the `FREEAGENT_CLIENT_ID`/
-  `FREEAGENT_CLIENT_SECRET` repo secrets the release workflow reads
-  (once the repo is public — see below). Nothing else code-side is
-  needed.
+- [ ] **Rate-limit the sign-in service at Cloudflare's edge.** Every
+  request to the Worker counts toward the free plan's 100,000 a day,
+  refused ones included, so anyone can spend the quota and stall
+  refreshes until the daily reset (users stay signed in). A
+  rate-limiting rule on `auth.ratchet.babissimo.net` would stop that
+  before it reaches the Worker.
+
+- [x] **Production FreeAgent environment support.** Builds target
+  production; `-Xswiftc -DFREEAGENT_SANDBOX` targets the sandbox. One
+  FreeAgent OAuth app serves both (live-tested), so the Worker holds a
+  single credential pair.
 
 - [x] **Self-signed code signing certificate.** Created in Keychain Access
   (Certificate Assistant → Create a Certificate → Code Signing, named
@@ -89,10 +75,8 @@ that constraint; each item notes what it costs to skip signing.
 
 - [x]/[ ] **GitHub Actions release workflow.** `.github/workflows/release.yml`
   drafted: tag push (`v*`) → `swift build -c release` →
-  `scripts/build-app.sh release` → `ditto`-zip → GitHub Release. Writes
-  `Secrets.swift` from a `FREEAGENT_CLIENT_ID` repo secret first (needs
-  adding once the repo exists — see below). Untested — no public repo to
-  push a tag to yet.
+  `scripts/build-app.sh release` → `ditto`-zip → GitHub Release. Needs no
+  repository secrets. Untested, as there is no public repo to push a tag to yet.
 
 - [x]/[ ] **Accept the one-time Gatekeeper prompt, and soften it.**
   - [x] `README.md` documents right-click → Open for first launch.

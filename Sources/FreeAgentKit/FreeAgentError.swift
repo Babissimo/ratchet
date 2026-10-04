@@ -9,6 +9,7 @@ public enum FreeAgentError: Error, CustomStringConvertible {
     case apiError(status: Int, message: String?)
     case authCancelled
     case authTimedOut
+    case authRejected(String)
     case stateMismatch
     case credentialStorageFailed
     case credentialStoreUnavailable(OSStatus)
@@ -28,6 +29,8 @@ public enum FreeAgentError: Error, CustomStringConvertible {
             return "login was cancelled"
         case .authTimedOut:
             return "login timed out — please try again"
+        case .authRejected(let reason):
+            return "FreeAgent didn't complete the sign-in (\(reason))"
         case .stateMismatch:
             return "login response didn't match the request (possible tampering) — please try again"
         case .credentialStorageFailed:
@@ -50,6 +53,13 @@ extension FreeAgentError: SessionExpiredError {
     /// an expiry deleted valid credentials.
     public var isSessionExpired: Bool {
         if case .unauthorized = self { return true }
+        return false
+    }
+}
+
+extension FreeAgentError: LoginCancelledError {
+    public var isLoginCancelled: Bool {
+        if case .authCancelled = self { return true }
         return false
     }
 }

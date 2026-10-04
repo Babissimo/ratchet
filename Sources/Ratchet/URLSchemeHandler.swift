@@ -19,6 +19,8 @@ public final class URLSchemeHandler {
     /// The in-flight `waitForCallback`, if any: the continuation to resume, plus the timeout
     /// that must be cancelled the moment it is.
     private struct PendingCallback {
+        /// The `state` the callback must carry. Any other is from another sign-in, or forged.
+        let state: String
         let continuation: CheckedContinuation<URL, Error>
         let timeout: DispatchWorkItem
     }
@@ -36,7 +38,7 @@ public final class URLSchemeHandler {
         )
     }
 
-    public func waitForCallback(timeout: TimeInterval) async throws -> URL {
+    public func waitForCallback(state: String, timeout: TimeInterval) async throws -> URL {
         // A second wait while one is already in flight would strand the first continuation,
         // which never resumes. Callers are already serialized by `isLoggingIn`, so this is
         // belt-and-braces — but silently leaking a continuation is not an acceptable failure.
@@ -50,7 +52,7 @@ public final class URLSchemeHandler {
                 guard let self else { return }
                 self.resumePending(with: .failure(FreeAgentError.authTimedOut))
             }
-            pending = PendingCallback(continuation: continuation, timeout: work)
+            pending = PendingCallback(state: state, continuation: continuation, timeout: work)
             // Cancelled as soon as the callback arrives. Left armed (as it used to be) it would
             // fire long after this login finished and resume whatever continuation happened to
             // be pending *then* — killing a later, still-active login attempt with a spurious
@@ -66,18 +68,19 @@ public final class URLSchemeHandler {
         // mid-login used to claim the continuation and abort the attempt, since it carries no
         // `code` — so a stray deep link (or another local app opening one) cancelled the login.
         guard Self.isOAuthCallback(url) else { return }
+        // Nor may a callback for any other sign-in, which anything can send to ratchet://.
+        guard let pending, OAuthCallbackParser.state(of: url) == pending.state else { return }
         resumePending(with: .success(url))
     }
 
-    // Parsed once from `FreeAgentAuthenticator.redirectURI` rather than re-parsed per event —
-    // it's the OAuth `redirect_uri` sent to FreeAgent and never changes at runtime, so this is
-    // the single source of truth `isOAuthCallback` compares against instead of duplicating the
-    // scheme/host as separate literals.
-    private static let expectedCallback = URL(string: FreeAgentAuthenticator.redirectURI)
+    // Parsed once from `FreeAgentAuthenticator.callbackURL` rather than re-parsed per event —
+    // it's where the sign-in service sends the browser back to and never changes at runtime, so
+    // this is the single source of truth `isOAuthCallback` compares against instead of
+    // duplicating the scheme/host as separate literals.
+    private static let expectedCallback = URL(string: FreeAgentAuthenticator.callbackURL)
 
-    /// Derived from `FreeAgentAuthenticator.redirectURI` at runtime, so the two can't drift apart.
-    /// The `state` nonce is still checked downstream by the authenticator; this is only about
-    /// which URLs are allowed to end the wait.
+    /// Derived from `FreeAgentAuthenticator.callbackURL` at runtime, so the two can't drift apart.
+    /// Only the scheme and host; `handleGetURLEvent` checks the `state` separately.
     private static func isOAuthCallback(_ url: URL) -> Bool {
         guard let expected = expectedCallback else { return false }
         guard url.scheme?.lowercased() == expected.scheme?.lowercased() else { return false }
