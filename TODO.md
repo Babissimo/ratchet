@@ -131,11 +131,6 @@ that constraint; each item notes what it costs to skip signing.
   timeslip's `hours`, so it would otherwise show a stale, paused-at
   duration).
 
-- [ ] **Invoicing support.** FreeAgent's API supports creating invoices from
-  unbilled timeslips; the app currently only tracks time, with no way to
-  generate or send an invoice for it. Would need new `DataStore` methods
-  plus menu/UI to select a client/project's unbilled entries and invoice
-  them.
 - [ ] **Duplicate timeslips when a create response is lost.** If the network drops after FreeAgent
   processes `POST /timeslips` but before the response arrives, the entry exists server-side with
   no local record, and retrying "Log past time" creates a second one. `startTimer` self-heals
