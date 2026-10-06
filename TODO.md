@@ -19,12 +19,10 @@ that constraint; each item notes what it costs to skip signing.
   stands in for PKCE so a callback intercepted on its way back through
   `ratchet://` is useless. Live-tested against production.
 
-- [ ] **Rate-limit the sign-in service at Cloudflare's edge.** Every
-  request to the Worker counts toward the free plan's 100,000 a day,
-  refused ones included, so anyone can spend the quota and stall
-  refreshes until the daily reset (users stay signed in). A
-  rate-limiting rule on `auth.ratchet.babissimo.net` would stop that
-  before it reaches the Worker.
+- [x] **Rate-limit the sign-in service at Cloudflare's edge.** A zone
+  rule blocks one client's flood before it reaches the Worker and spends
+  the free plan's 100,000 requests a day. A distributed flood still
+  gets through; see `worker/README.md`.
 
 - [x] **Production FreeAgent environment support.** Builds target
   production; `-Xswiftc -DFREEAGENT_SANDBOX` targets the sandbox. One
