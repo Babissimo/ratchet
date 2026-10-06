@@ -68,6 +68,12 @@ two at once), `secret put` it here, and only then revoke the old one. Rotating `
 fails only sign-ins in progress; refreshes don't use it.
 
 On the Workers Free plan this shares the account's 100,000 requests a day with every other
-Worker in it. A signed-in Ratchet makes at most about one request an hour, but every request
-counts, refused ones included, so anyone can spend the quota; a Cloudflare rate-limiting rule on
-the hostname would stop that before it reaches the Worker.
+Worker in it, refused requests included. A signed-in Ratchet makes at most about one request an
+hour. The `babissimo.net` zone's one rate-limiting rule (Security → WAF in the dashboard, not
+in `wrangler.jsonc`) blocks a client past 6 requests in 10 seconds on this hostname for 10
+seconds, at the edge, where blocked requests cost nothing. Its 429 reaches the app as a passing
+failure, never a sign-out. It stops one source only: a distributed flood, or one aimed at another
+Worker on the account, can still spend the quota and stall refreshes until the daily reset.
+
+Cloudflare documents Free-plan rate-limiting rules as unable to match on hostname. The API
+accepted this one and enforces it, but the dashboard may refuse to save an edit to it.
