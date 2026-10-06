@@ -8,6 +8,7 @@
 # Xcode project.
 #
 # Usage: scripts/build-app.sh [debug|release]
+# Set FREEAGENT_SANDBOX=1 to build against FreeAgent's sandbox.
 
 set -euo pipefail
 
@@ -21,9 +22,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "Building Ratchet ($CONFIG)..."
+SWIFT_FLAGS=()
+if [[ "${FREEAGENT_SANDBOX:-}" == "1" ]]; then
+    SWIFT_FLAGS+=(-Xswiftc -DFREEAGENT_SANDBOX)
+fi
+
 # --product keeps IconExporter (a dev-only AppKit renderer that is never bundled) out of the
 # app build; it gets built explicitly below instead.
-swift build -c "$CONFIG" --product Ratchet
+swift build -c "$CONFIG" --product Ratchet ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
 
 # The icon is drawn by RatchetIcon in Swift, so regenerate it from current source on every build
 # rather than trusting the committed .icns — otherwise a colour or texture tweak changes the
@@ -33,9 +39,9 @@ echo "Regenerating app icon..."
 ICON_DIR=".build/icons"
 ICNS_PATH="$ICON_DIR/AppIcon.icns"
 rm -rf "$ICON_DIR/AppIcon.iconset"
-# Same config as the app build above, so this only has to compile IconExporter itself rather
-# than a second copy of RatchetCore.
-swift run -c "$CONFIG" IconExporter "$ICON_DIR" > /dev/null
+# Same config and flags as the app build above, so this only has to compile IconExporter itself
+# rather than a second copy of RatchetCore.
+swift run -c "$CONFIG" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} IconExporter "$ICON_DIR" > /dev/null
 iconutil -c icns "$ICON_DIR/AppIcon.iconset" -o "$ICNS_PATH"
 
 BIN_PATH=".build/$CONFIG/Ratchet"

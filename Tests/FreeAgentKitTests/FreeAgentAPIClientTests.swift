@@ -84,6 +84,36 @@ final class FreeAgentAPIClientTests: XCTestCase {
         store.clear()
     }
 
+    func test_exchangeAuthorizationCode_sendsOnlyTheCodeAndVerifierToTheSignInService() async throws {
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"access_token":"a","refresh_token":"r","expires_in":3600}"#.utf8))]
+        let store = KeychainTokenStore(service: "unused-in-this-test")
+        let client = FreeAgentAPIClient(environment: .production, tokenStore: store, transport: transport)
+
+        let tokens = try await client.exchangeAuthorizationCode("c0de/+=", codeVerifier: "v3r1f13r~")
+
+        XCTAssertEqual(tokens.accessToken, "a")
+        let request = transport.calls[0].request
+        XCTAssertEqual(request.url, FreeAgentEnvironment.production.tokenURL)
+        XCTAssertEqual(request.url?.host, "auth.ratchet.babissimo.net")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "the app must not carry client credentials")
+        XCTAssertEqual(request.httpBody.map { String(decoding: $0, as: UTF8.self) }, "grant_type=authorization_code&code=c0de%2F%2B%3D&code_verifier=v3r1f13r~")
+    }
+
+    func test_refreshTokens_sendsOnlyTheRefreshTokenToTheSignInService() async throws {
+        let transport = StubTransport()
+        transport.responses = [(200, Data(#"{"access_token":"a2","refresh_token":"r2","expires_in":3600}"#.utf8))]
+        let store = KeychainTokenStore(service: "unused-in-this-test")
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        _ = try await client.refreshTokens("r1")
+
+        let request = transport.calls[0].request
+        XCTAssertEqual(request.url, FreeAgentEnvironment.sandbox.tokenURL)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(request.httpBody.map { String(decoding: $0, as: UTF8.self) }, "grant_type=refresh_token&refresh_token=r1")
+    }
+
     func test_authenticatedRequest_retriesOnceOn401ThenSucceeds() async throws {
         struct Thing: Decodable { let name: String }
         let transport = StubTransport()

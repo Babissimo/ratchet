@@ -8,8 +8,11 @@ timeslips without opening a browser tab. Click the tray icon to see your
 FreeAgent tasks and projects, start tracking against one, and stop it again
 later; the icon's rim and teeth turn green while a timer is running, so you
 can tell at a glance whether the clock is going. It authenticates with your
-FreeAgent account via OAuth and talks to the FreeAgent API directly — there's
-no separate server or account of its own.
+FreeAgent account via OAuth and talks to the FreeAgent API directly. The one
+exception is sign-in: FreeAgent requires an app secret that can't ship inside
+an open-source app, so a small sign-in service ([`worker/`](worker/)) adds it
+when Ratchet signs in and renews its access. Your timesheet data never passes
+through it, and it keeps nothing.
 
 ## Building
 
@@ -25,8 +28,8 @@ and register a real `.app` bundle instead:
 scripts/build-app.sh debug
 ```
 
-See `CLAUDE.md` for the local setup required before either of these will
-compile (`Sources/FreeAgentKit/Secrets.swift`), and for testing notes.
+See `CLAUDE.md` for building against FreeAgent's sandbox, and for testing
+notes.
 
 ## Installation
 

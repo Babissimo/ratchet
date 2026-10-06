@@ -12,17 +12,19 @@ public enum FreeAgentEnvironment {
         }
     }
 
-    public var authorizeURL: URL {
-        switch self {
-        case .sandbox: return URL(string: "https://api.sandbox.freeagent.com/v2/approve_app")!
-        case .production: return URL(string: "https://api.freeagent.com/v2/approve_app")!
-        }
-    }
+    /// Ratchet's sign-in service (`worker/`). FreeAgent registers only confidential OAuth clients,
+    /// so the client credentials live there and the app ships none: sign-in starts at
+    /// `authorizeURL` and every token request goes to `tokenURL`, where the service adds them.
+    private static let signInServiceURL = URL(string: "https://auth.ratchet.babissimo.net")!
 
-    public var tokenURL: URL {
+    public var authorizeURL: URL { Self.signInServiceURL.appendingPathComponent("\(signInServicePath)/authorize") }
+
+    public var tokenURL: URL { Self.signInServiceURL.appendingPathComponent("\(signInServicePath)/token") }
+
+    private var signInServicePath: String {
         switch self {
-        case .sandbox: return URL(string: "https://api.sandbox.freeagent.com/v2/token_endpoint")!
-        case .production: return URL(string: "https://api.freeagent.com/v2/token_endpoint")!
+        case .sandbox: return "sandbox"
+        case .production: return "production"
         }
     }
 
@@ -39,8 +41,12 @@ public enum FreeAgentEnvironment {
 }
 
 public extension FreeAgentEnvironment {
-    /// The environment the compiled-in `FreeAgentSecrets.clientID`/`clientSecret` were registered
-    /// against. Exposed here rather than making `FreeAgentSecrets` itself public, since callers
-    /// outside this module need the environment but never the credentials.
-    static var configured: FreeAgentEnvironment { FreeAgentSecrets.environment }
+    /// Production, unless built with `-Xswiftc -DFREEAGENT_SANDBOX`.
+    static var configured: FreeAgentEnvironment {
+        #if FREEAGENT_SANDBOX
+        return .sandbox
+        #else
+        return .production
+        #endif
+    }
 }
