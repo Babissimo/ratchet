@@ -78,6 +78,8 @@ That assembles `.build/Ratchet.app` around the built binary and registers it wit
   and testing" above). Not shipped in the bundle.
 - `worker/`: the sign-in service (see "Sign-in and environments" above). JavaScript, not part
   of the Swift package.
+- `site/`: the landing page at ratchet.babissimo.net, outside the Swift package. Its demo menu
+  mirrors `MenuBuilder` by hand; see `site/README.md`.
 
 ## Conventions
 

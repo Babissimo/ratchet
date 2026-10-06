@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ratchet-site",
+  "compatibility_date": "2026-10-02",
+  // Static files only: no Worker script, so every request is served straight from assets.
+  "assets": {
+    "directory": "./public"
+  },
+  "routes": [
+    { "pattern": "ratchet.babissimo.net", "custom_domain": true }
+  ],
+  // One canonical address rather than a second copy on workers.dev.
+  "workers_dev": false,
+  "preview_urls": false
+}

@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ratchet: FreeAgent timers in the Mac menu bar</title>
+<meta name="description" content="Ratchet is a small macOS menu-bar app that starts and stops FreeAgent timers without a browser tab.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#E3E7E1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111714" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Ratchet">
+<meta property="og:description" content="FreeAgent timers from the Mac menu bar.">
+<meta property="og:image" content="https://ratchet.babissimo.net/apple-touch-icon.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anybody:wdth,wght@50..150,100..900&family=Hanken+Grotesk:ital,wght@0,400..700;1,400&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<style>
+:root {
+  --ground: #E3E7E1;
+  --ink: #131B17;
+  --ink-soft: #4A5750;
+  --rule: #BFC8C1;
+  --green: #4CAF3E;
+  --green-ink: #276B1F;
+  /* Tracking hands follow the app: black on a light menu bar, white on a dark one. */
+  --hands-on: #131B17;
+  --bar-bg: rgba(240, 243, 239, 0.74);
+  --bar-ink: #131B17;
+  --bar-press: rgba(0, 0, 0, 0.11);
+  --menu-bg: rgba(238, 240, 237, 0.9);
+  --menu-ink: #1D1F1E;
+  --menu-dim: rgba(29, 31, 30, 0.36);
+  --menu-soft: rgba(29, 31, 30, 0.6);
+  --menu-sep: rgba(0, 0, 0, 0.1);
+  --menu-edge: rgba(0, 0, 0, 0.16);
+  --menu-open: rgba(0, 0, 0, 0.09);
+  --menu-hl: #0A62D9;
+  --focus: #0A62D9;
+
+  --f-display: "Anybody", "Arial Black", sans-serif;
+  --f-body: "Hanken Grotesk", system-ui, sans-serif;
+  --f-mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --f-system: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+
+  --gutter: clamp(16px, 5vw, 64px);
+  --bar-h: 28px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #111714;
+    --ink: #E2E8E3;
+    --ink-soft: #97A59C;
+    --rule: #2B3630;
+    --green-ink: #6CC85C;
+    --hands-on: #FFFFFF;
+    --bar-bg: rgba(17, 23, 20, 0.7);
+    --bar-ink: #EEF2EF;
+    --bar-press: rgba(255, 255, 255, 0.16);
+    --menu-bg: rgba(40, 44, 42, 0.9);
+    --menu-ink: #EEF0EF;
+    --menu-dim: rgba(238, 240, 239, 0.34);
+    --menu-soft: rgba(238, 240, 239, 0.62);
+    --menu-sep: rgba(255, 255, 255, 0.12);
+    --menu-edge: rgba(255, 255, 255, 0.14);
+    --menu-open: rgba(255, 255, 255, 0.12);
+    --focus: #5A9BFF;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 17px/1.55 var(--f-body);
+  overflow-x: hidden;
+}
+a { color: inherit; text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+h1, h2, p, dl, dd { margin: 0; }
+
+/* ---- Menu bar: the site's navigation and the demo's status item ---- */
+.menubar {
+  position: fixed; inset: 0 0 auto 0; z-index: 20;
+  height: var(--bar-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 6px;
+  background: var(--bar-bg);
+  -webkit-backdrop-filter: saturate(1.8) blur(20px);
+  backdrop-filter: saturate(1.8) blur(20px);
+  color: var(--bar-ink);
+  font: 400 13px/1 var(--f-system);
+}
+.menubar nav { display: flex; align-items: center; min-width: 0; }
+.menubar nav a {
+  padding: 5px 9px; border-radius: 5px; text-decoration: none; white-space: nowrap;
+}
+.menubar nav a:hover { background: var(--bar-press); }
+.menubar nav a:first-child { font-weight: 700; }
+.status { display: flex; align-items: center; gap: 2px; }
+.status-item { position: relative; }
+#ratchet-item {
+  display: grid; place-items: center;
+  height: 22px; padding: 0 8px; border: 0; border-radius: 5px;
+  background: transparent; color: inherit; cursor: default;
+}
+#ratchet-item:hover, #ratchet-item[aria-expanded="true"] { background: var(--bar-press); }
+#ratchet-item svg { width: 17px; height: 17px; display: block; }
+.clock { padding: 0 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.hint {
+  position: absolute; top: calc(100% + 12px); right: -4px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  font: 500 11px/1.3 var(--f-mono); letter-spacing: 0.02em; color: var(--ink);
+  white-space: nowrap; pointer-events: none;
+  transition: opacity 0.3s;
+}
+.hint::before {
+  content: ""; width: 1px; height: 26px; margin-right: 20px;
+  background: currentColor;
+}
+.tried .hint, .scrolled .hint { opacity: 0; }
+
+/* ---- The mark ---- */
+.mark-bezel { fill: var(--bezel); }
+.mark-hand { stroke: var(--hands); stroke-width: 4; stroke-linecap: round; fill: none; }
+.glyph { --bezel: var(--bar-ink); --hands: var(--bar-ink); }
+.is-tracking .glyph { --bezel: var(--green); --hands: var(--hands-on); }
+
+/* ---- Hero ---- */
+.hero {
+  position: relative;
+  min-height: min(100svh, 940px);
+  padding: calc(var(--bar-h) + clamp(56px, 12vh, 132px)) var(--gutter) clamp(56px, 10vh, 112px);
+  display: grid; align-content: center;
+  overflow: hidden;
+}
+.giant {
+  --bezel: var(--ink); --hands: var(--ink);
+  position: absolute; z-index: 0;
+  width: clamp(560px, 66vw, 1080px); aspect-ratio: 1;
+  right: calc(clamp(560px, 66vw, 1080px) * -0.3);
+  top: 50%; transform: translateY(-46%);
+  pointer-events: none;
+}
+.is-tracking .giant { --bezel: var(--green); --hands: var(--hands-on); }
+.giant .mark-bezel { transition: fill 0.5s ease; }
+.giant .mark-hand { transition: stroke 0.5s ease; }
+.giant .bezel-turn {
+  transform-box: view-box; transform-origin: 32px 32px;
+  transform: rotate(calc(var(--turn, 0) * 60deg));
+  /* Overshoot then settle: the pawl dropping into the next tooth. */
+  transition: transform 0.55s cubic-bezier(0.3, 1.8, 0.5, 1);
+}
+.giant .minute {
+  transform-box: view-box; transform-origin: 32px 32px;
+  animation: sweep 60s linear infinite paused;
+}
+.is-tracking .giant .minute { animation-play-state: running; }
+@keyframes sweep { to { transform: rotate(360deg); } }
+
+.hero-copy { position: relative; z-index: 1; max-width: 35rem; }
+.wordmark {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.9rem;
+  margin-bottom: clamp(20px, 3.5vh, 36px);
+}
+.wordmark b {
+  font: 820 1.05rem/1 var(--f-display); font-stretch: 150%;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+.wordmark span { font: 400 0.72rem/1.2 var(--f-mono); color: var(--ink-soft); letter-spacing: 0.02em; }
+h1 {
+  font: 780 clamp(2.6rem, 6.6vw, 5.4rem)/0.95 var(--f-display);
+  font-stretch: 116%;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+.lede {
+  margin-top: clamp(20px, 3.5vh, 32px);
+  font-size: clamp(1.05rem, 1.5vw, 1.2rem); line-height: 1.5;
+  max-width: 31rem; color: var(--ink);
+}
+.demo-log {
+  margin-top: clamp(28px, 5vh, 48px);
+  max-width: 30rem; min-height: 6.4em;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--rule);
+  transition: border-color 0.4s;
+}
+.is-tracking .demo-log { border-left-color: var(--green); }
+.log-label {
+  font: 500 0.68rem/1 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-soft); margin-bottom: 9px;
+}
+.log-text { font-size: 0.97rem; line-height: 1.5; }
+.log-text strong { font-weight: 650; }
+
+/* ---- Sections ---- */
+main section { scroll-margin-top: calc(var(--bar-h) + 12px); }
+.band {
+  padding: clamp(64px, 10vw, 128px) var(--gutter);
+  border-top: 1px solid var(--rule);
+}
+.wrap { max-width: 1120px; margin: 0 auto; }
+h2 {
+  font: 760 clamp(1.9rem, 3.8vw, 2.9rem)/1 var(--f-display);
+  font-stretch: 122%;
+  letter-spacing: -0.01em;
+}
+.section-head { display: grid; gap: 14px; margin-bottom: clamp(32px, 5vw, 56px); }
+
+.features { border-top: 1px solid var(--ink); }
+.features > div {
+  display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 8px 40px;
+  padding: 22px 0; border-bottom: 1px solid var(--rule);
+}
+.features dt { font: 680 1.08rem/1.35 var(--f-display); font-stretch: 108%; }
+.features dd { max-width: 40rem; color: var(--ink); }
+
+footer {
+  padding: 32px var(--gutter) 48px; border-top: 1px solid var(--rule);
+  font: 400 0.72rem/1.7 var(--f-mono); color: var(--ink-soft);
+}
+footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 32px; }
+
+/* ---- The demo menu ---- */
+.menu {
+  min-width: 13rem;
+  padding: 5px;
+  border-radius: 9px;
+  background: var(--menu-bg);
+  -webkit-backdrop-filter: saturate(1.8) blur(24px);
+  backdrop-filter: saturate(1.8) blur(24px);
+  box-shadow: 0 0 0 0.5px var(--menu-edge), 0 10px 32px rgba(0, 0, 0, 0.24), 0 2px 6px rgba(0, 0, 0, 0.1);
+  color: var(--menu-ink);
+  font: 400 13px/1.25 var(--f-system);
+  text-align: left;
+}
+.menu:focus { outline: none; }
+.menu-root { position: fixed; z-index: 30; top: calc(var(--bar-h) + 3px); }
+.menu-root.inline { left: 8px; right: 8px; max-height: calc(100svh - var(--bar-h) - 16px); overflow-y: auto; overscroll-behavior: contain; }
+.mi { position: relative; }
+.mi > .menu { position: absolute; top: -5px; right: calc(100% + 1px); }
+.inline .mi > .menu {
+  position: static; min-width: 0; margin: 2px 0 4px 14px; padding: 0 0 0 4px;
+  border-left: 1px solid var(--menu-sep); border-radius: 0;
+  background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.item {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  min-height: 22px; padding: 3px 9px; border: 0; border-radius: 5px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: default;
+  white-space: nowrap;
+}
+.inline .item { min-height: 34px; white-space: normal; }
+.item:focus, .item:focus-visible { outline: none; background: var(--menu-hl); color: #fff; }
+.mi.open > .item:not(:focus) { background: var(--menu-open); }
+.item[aria-disabled="true"] { color: var(--menu-dim); }
+.item[aria-disabled="true"]:focus { background: none; color: var(--menu-dim); }
+.gutter { flex: none; width: 13px; display: grid; place-items: center; margin-left: -3px; }
+.gutter svg { width: 11px; height: 11px; fill: currentColor; }
+.menu:not(.has-gutter) > .mi > .item > .gutter { display: none; }
+.label { flex: 1; min-width: 0; }
+.line2 { display: block; font-size: 11px; color: var(--menu-soft); }
+.item:focus .line2 { color: rgba(255, 255, 255, 0.82); }
+.key, .chev { flex: none; margin-left: 18px; color: var(--menu-soft); }
+.item:focus .key, .item:focus .chev { color: #fff; }
+.chev svg { width: 7px; height: 11px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.inline .mi.open > .item .chev svg { transform: rotate(90deg); }
+.sep { height: 1px; margin: 5px 9px; background: var(--menu-sep); }
+.header { padding: 6px 9px 2px; font-size: 11px; font-weight: 700; color: var(--menu-soft); }
+
+@media (max-width: 899px) {
+  .menubar nav a:not(:first-child) { display: none; }
+  .clock .date { display: none; }
+}
+@media (max-width: 760px) {
+  /* Clears the hint under the status item before the mark begins. */
+  .hero { min-height: 0; align-content: start; padding-top: calc(var(--bar-h) + 76px); }
+  .giant {
+    position: relative; display: block; transform: none; top: auto; right: auto;
+    width: 64vw; margin: 0 -26vw -16vw auto;
+  }
+  .hint { right: -2px; }
+  .features > div { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .giant .bezel-turn, .giant .mark-bezel, .giant .mark-hand, .demo-log, .hint { transition: none; }
+  .giant .minute { animation: none; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <path id="bezel" fill-rule="evenodd" d="M 24.50,1.92 L 25.71,6.77 L 26.54,6.58 L 27.37,6.41 L 28.21,6.27 L 29.05,6.14 L 29.90,6.04 L 30.75,5.97 L 31.60,5.91 L 32.46,5.87 L 33.31,5.85 L 34.17,5.85 L 35.04,5.86 L 35.90,5.90 L 36.77,5.95 L 37.64,6.02 L 38.52,6.11 L 39.39,6.21 L 40.28,6.34 L 41.16,6.48 L 42.06,6.63 L 42.95,6.81 L 43.86,7.00 L 44.77,7.21 L 45.69,7.44 L 46.61,7.69 L 47.54,7.95 L 48.48,8.24 L 49.43,8.55 L 50.38,8.89 L 51.35,9.24 L 52.32,9.62 L 53.31,10.03 L 54.30,10.47 L 54.30,10.47 L 50.70,13.94 L 51.28,14.56 L 51.85,15.20 L 52.39,15.85 L 52.92,16.52 L 53.43,17.20 L 53.92,17.90 L 54.40,18.61 L 54.86,19.33 L 55.30,20.06 L 55.74,20.81 L 56.15,21.56 L 56.55,22.33 L 56.94,23.11 L 57.32,23.90 L 57.68,24.70 L 58.03,25.51 L 58.36,26.34 L 58.69,27.17 L 59.00,28.03 L 59.30,28.89 L 59.58,29.77 L 59.86,30.66 L 60.12,31.57 L 60.36,32.50 L 60.60,33.44 L 60.81,34.39 L 61.02,35.37 L 61.21,36.37 L 61.38,37.38 L 61.54,38.41 L 61.68,39.47 L 61.80,40.54 L 61.80,40.54 L 56.99,39.17 L 56.75,39.98 L 56.47,40.79 L 56.18,41.59 L 55.86,42.38 L 55.53,43.16 L 55.17,43.93 L 54.80,44.70 L 54.40,45.46 L 53.99,46.21 L 53.56,46.96 L 53.12,47.70 L 52.65,48.43 L 52.17,49.15 L 51.68,49.87 L 51.16,50.59 L 50.63,51.30 L 50.09,52.00 L 49.52,52.70 L 48.94,53.39 L 48.34,54.08 L 47.72,54.77 L 47.09,55.45 L 46.43,56.13 L 45.75,56.81 L 45.05,57.48 L 44.33,58.15 L 43.59,58.82 L 42.82,59.48 L 42.03,60.14 L 41.22,60.79 L 40.37,61.44 L 39.50,62.08 L 39.50,62.08 L 38.29,57.23 L 37.46,57.42 L 36.63,57.59 L 35.79,57.73 L 34.95,57.86 L 34.10,57.96 L 33.25,58.03 L 32.40,58.09 L 31.54,58.13 L 30.69,58.15 L 29.83,58.15 L 28.96,58.14 L 28.10,58.10 L 27.23,58.05 L 26.36,57.98 L 25.48,57.89 L 24.61,57.79 L 23.72,57.66 L 22.84,57.52 L 21.94,57.37 L 21.05,57.19 L 20.14,57.00 L 19.23,56.79 L 18.31,56.56 L 17.39,56.31 L 16.46,56.05 L 15.52,55.76 L 14.57,55.45 L 13.62,55.11 L 12.65,54.76 L 11.68,54.38 L 10.69,53.97 L 9.70,53.53 L 9.70,53.53 L 13.30,50.06 L 12.72,49.44 L 12.15,48.80 L 11.61,48.15 L 11.08,47.48 L 10.57,46.80 L 10.08,46.10 L 9.60,45.39 L 9.14,44.67 L 8.70,43.94 L 8.26,43.19 L 7.85,42.44 L 7.45,41.67 L 7.06,40.89 L 6.68,40.10 L 6.32,39.30 L 5.97,38.49 L 5.64,37.66 L 5.31,36.83 L 5.00,35.97 L 4.70,35.11 L 4.42,34.23 L 4.14,33.34 L 3.88,32.43 L 3.64,31.50 L 3.40,30.56 L 3.19,29.61 L 2.98,28.63 L 2.79,27.63 L 2.62,26.62 L 2.46,25.59 L 2.32,24.53 L 2.20,23.46 L 2.20,23.46 L 7.01,24.83 L 7.25,24.02 L 7.53,23.21 L 7.82,22.41 L 8.14,21.62 L 8.47,20.84 L 8.83,20.07 L 9.20,19.30 L 9.60,18.54 L 10.01,17.79 L 10.44,17.04 L 10.88,16.30 L 11.35,15.57 L 11.83,14.85 L 12.32,14.13 L 12.84,13.41 L 13.37,12.70 L 13.91,12.00 L 14.48,11.30 L 15.06,10.61 L 15.66,9.92 L 16.28,9.23 L 16.91,8.55 L 17.57,7.87 L 18.25,7.19 L 18.95,6.52 L 19.67,5.85 L 20.41,5.18 L 21.18,4.52 L 21.97,3.86 L 22.78,3.21 L 23.63,2.56 L 24.50,1.92 Z M 13.00,32.00 A 19.00,19.00 0 1,1 51.00,32.00 A 19.00,19.00 0 1,1 13.00,32.00 Z"/>
+  </defs>
+</svg>
+
+<header class="menubar">
+  <nav aria-label="Sections">
+    <a href="#top">Ratchet</a>
+    <a href="#features">What it does</a>
+  </nav>
+  <div class="status">
+    <div class="status-item">
+      <button id="ratchet-item" type="button" aria-label="Ratchet menu" aria-haspopup="menu" aria-expanded="false" title="Idle">
+        <svg class="glyph" viewBox="0 0 64 64" aria-hidden="true">
+          <use href="#bezel" class="mark-bezel"/>
+          <line class="mark-hand" x1="32" y1="32" x2="41.79" y2="37.65"/>
+          <line class="mark-hand" x1="32" y1="32" x2="32" y2="16.14"/>
+        </svg>
+      </button>
+      <p class="hint" aria-hidden="true">Click to try it</p>
+    </div>
+    <span class="clock" aria-hidden="true"><span class="date"></span> <span class="time"></span></span>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <svg class="giant" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+      <g class="bezel-turn"><use href="#bezel" class="mark-bezel"/></g>
+      <line class="mark-hand" x1="32" y1="32" x2="41.79" y2="37.65"/>
+      <line class="mark-hand minute" x1="32" y1="32" x2="32" y2="16.14"/>
+    </svg>
+    <div class="hero-copy">
+      <p class="wordmark"><b>Ratchet</b><span>for FreeAgent, on macOS</span></p>
+      <h1>Start the clock from the menu bar.</h1>
+      <p class="lede">Ratchet starts and stops FreeAgent timers without a browser tab. While one is running the icon turns green, so a glance tells you whether you are on the clock.</p>
+      <div class="demo-log" aria-live="polite">
+        <p class="log-label">Try it</p>
+        <p class="log-text"><strong>The icon in the menu bar above opens Ratchet's menu.</strong> This copy works, with invented clients, and nothing in it reaches FreeAgent.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" class="band">
+    <div class="wrap">
+      <div class="section-head"><h2>What it does</h2></div>
+      <dl class="features">
+        <div>
+          <dt>Start, stop, switch</dt>
+          <dd>Start a timer on any task, or on the last one you tracked in a single click. Switching task moves the running timeslip rather than starting another, so it stays one continuous entry.</dd>
+        </div>
+        <div>
+          <dt>Log time after the fact</dt>
+          <dd>Book a duration and comment to any day you missed, from the same client, project and task picker.</dd>
+        </div>
+        <div>
+          <dt>Correct mistakes</dt>
+          <dd>Unbilled entries under Recent time entries open for editing. Invoiced ones are listed but locked, as FreeAgent locks them.</dd>
+        </div>
+        <div>
+          <dt>Create as you go</dt>
+          <dd>Add a client, project or task from inside the picker when the one you need does not exist yet.</dd>
+        </div>
+        <div>
+          <dt>Straight to FreeAgent</dt>
+          <dd>You sign in to FreeAgent in your browser and Ratchet talks to its API directly. A small sign-in service holds Ratchet's FreeAgent app credentials and stores nothing; your time entries never pass through it. There is no Ratchet account, and your sign-in tokens stay in the macOS Keychain.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Ratchet is free software under the GNU GPL v3, by <a href="https://babissimo.net">Babissimo</a>.</span>
+    <span>Not made by or affiliated with FreeAgent.</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const html = document.documentElement;
+  const SEP = { sep: true };
+  const today = new Date();
+  const daysAgo = n => new Date(today.getFullYear(), today.getMonth(), today.getDate() - n);
+  const sameDay = (a, b) => a.toDateString() === b.toDateString();
+  const ref = (client, project, task) => ({ client, project, task });
+  const same = (a, b) => !!a && !!b && a.client === b.client && a.project === b.project && a.task === b.task;
+
+  // Invented data. The menu structure mirrors Sources/RatchetCore/MenuBuilder.swift.
+  const clients = [
+    { name: 'Harbour & Finch', projects: [
+      { name: 'Spring catalogue', tasks: ['Layout', 'Proofing', 'Client calls'] },
+      { name: 'Retainer', tasks: ['Support', 'Meetings'] },
+    ] },
+    { name: 'Kestrel Joinery', projects: [
+      { name: 'Website rebuild', tasks: ['Design', 'Build', 'Content'] },
+    ] },
+    { name: 'Lantern Theatre Co.', projects: [
+      { name: 'Box office', tasks: ['Discovery', 'Prototype'] },
+    ] },
+  ];
+
+  const state = {
+    screen: 'idle',
+    current: null,
+    startedAt: 0,
+    last: ref('Harbour & Finch', 'Spring catalogue', 'Layout'),
+    remoteRunning: false,
+    launchAtLogin: true,
+    refreshedAt: new Date(Date.now() - 7 * 60e3),
+    entries: [
+      { ref: ref('Harbour & Finch', 'Spring catalogue', 'Layout'), seconds: 8100, day: daysAgo(1), invoiced: false },
+      { ref: ref('Kestrel Joinery', 'Website rebuild', 'Build'), seconds: 13200, day: daysAgo(1), invoiced: false },
+      { ref: ref('Harbour & Finch', 'Retainer', 'Meetings'), seconds: 2700, day: daysAgo(2), invoiced: false },
+      { ref: ref('Lantern Theatre Co.', 'Box office', 'Prototype'), seconds: 23400, day: daysAgo(15), invoiced: true },
+      { ref: ref('Kestrel Joinery', 'Website rebuild', 'Design'), seconds: 14400, day: daysAgo(22), invoiced: true },
+    ],
+  };
+
+  // Same shape as ElapsedTimeFormatter: hours and minutes, no seconds.
+  const elapsed = s => {
+    const t = Math.max(0, Math.round(s));
+    return `${Math.floor(t / 3600)}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}`;
+  };
+  const running = () => (Date.now() - state.startedAt) / 1000;
+  const dayText = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = d => `${pad(d.getHours())}:${pad(d.getMinutes())} on ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const path = r => `${r.client} · ${r.project} · ${r.task}`;
+
+  // ---- Narration ----
+  const logLabel = document.querySelector('.log-label');
+  const logText = document.querySelector('.log-text');
+  function say(title, body) {
+    logLabel.textContent = 'In the app';
+    logText.replaceChildren();
+    const strong = document.createElement('strong');
+    strong.textContent = title + '. ';
+    logText.append(strong, body);
+  }
+
+  // ---- Actions ----
+  let turns = 0;
+  const giantTurn = document.querySelector('.giant .bezel-turn');
+  function ratchet() {
+    turns += 1;
+    giantTurn.style.setProperty('--turn', turns);
+  }
+
+  function start(r) {
+    Object.assign(state, { screen: 'tracking', current: r, last: r, startedAt: Date.now(), remoteRunning: true });
+    ratchet();
+    say(`Tracking ${r.task}`, `FreeAgent's own timer is running on ${r.client} · ${r.project}, so it shows in the web app as well. The icon stays green until you stop it.`);
+  }
+  function stop() {
+    const r = state.current;
+    const secs = running();
+    // Restarting a task on the same day carries on that day's timeslip, as FreeAgentDataStore.startTimer does.
+    const existing = state.entries.find(e => same(e.ref, r) && sameDay(e.day, today) && !e.invoiced);
+    if (existing) existing.seconds += secs;
+    else state.entries.unshift({ ref: r, seconds: secs, day: daysAgo(0), invoiced: false });
+    Object.assign(state, { screen: 'idle', current: null, remoteRunning: false });
+    ratchet();
+    say(`Stopped ${r.task}`, `The time is on today's ${r.task} timeslip, at the top of Recent time entries. Starting ${r.task} again today carries on that timeslip rather than opening another.`);
+  }
+  function switchTo(r) {
+    Object.assign(state, { current: r, last: r });
+    ratchet();
+    say(`Switched to ${r.task}`, `The running timeslip moves to ${r.client} · ${r.project} in place, so it stays one entry and the clock keeps its start time.`);
+  }
+  function logIn() {
+    state.screen = state.remoteRunning ? 'tracking' : 'idle';
+    say('Logged in', 'Sign-in happens in your browser, which hands back to Ratchet through a ratchet:// link.' +
+      (state.remoteRunning ? ' The timer still running in FreeAgent is picked up as it was.' : ''));
+  }
+  function logOut() {
+    const wasTracking = state.screen === 'tracking';
+    state.screen = 'loggedOut';
+    say('Logged out', wasTracking
+      ? 'The timer carries on in FreeAgent. Log in again and Ratchet picks it up where it left off.'
+      : 'Log in again from the same menu.');
+  }
+
+  // ---- Menus ----
+  function picker(leaf, newTask, exclude) {
+    return [
+      ...clients.map(c => ({ label: c.name, items: () => [
+        ...c.projects.map(p => ({ label: p.name, items: () => {
+          const tasks = p.tasks.map(t => ref(c.name, p.name, t)).filter(r => !same(r, exclude));
+          return [
+            ...(tasks.length ? tasks.map(r => ({ label: r.task, run: () => leaf(r) })) : [{ label: 'No tasks', disabled: true }]),
+            SEP,
+            { label: 'New task…', run: () => newTask(c.name, p.name) },
+          ];
+        } })),
+        SEP,
+        { label: 'Add project…', run: () => say('Add project', `Opens a sheet to create a project for ${c.name} in FreeAgent, without leaving the menu.`) },
+      ] })),
+      SEP,
+      { label: 'Add client…', run: () => say('Add client', 'Opens a sheet to create a client in FreeAgent, without leaving the menu.') },
+    ];
+  }
+
+  const startPicker = () => picker(start, (c, p) => say('New task', `Opens a sheet to create a task in ${p} without leaving the menu.`));
+  const logPicker = () => picker(
+    r => say('Log past time', `Opens a sheet for the date, duration and comment, then books the time to ${r.task} in FreeAgent.`),
+    (c, p) => say('Log past time', `Opens one sheet to create a task in ${p} and log time to it.`)
+  );
+  const switchPicker = () => picker(
+    switchTo,
+    (c, p) => say('Switch task', `Creates a task in ${p} and moves the running timer onto it.`),
+    state.current
+  );
+
+  function recentItems() {
+    const list = state.entries.slice().sort((a, b) => b.day - a.day).slice(0, 20);
+    const rows = (entries, editable) => entries.length
+      ? entries.map(e => ({
+          label: `${path(e.ref)} · ${elapsed(e.seconds)} · ${dayText(e.day)}`,
+          disabled: !editable,
+          run: () => say('Edit time entry', `Opens ${e.ref.task} on ${dayText(e.day)} for editing: task, date, duration and comment, saved straight back to FreeAgent.`),
+        }))
+      : [{ label: '(empty)', disabled: true }];
+    return [
+      { header: 'Unbilled' }, ...rows(list.filter(e => !e.invoiced), true),
+      { header: 'Invoiced' }, ...rows(list.filter(e => e.invoiced), false),
+    ];
+  }
+
+  function settingsItems() {
+    return [
+      { label: 'you@example.com', disabled: true },
+      { label: 'Refresh projects & tasks', sub: `Last refreshed at ${stamp(state.refreshedAt)}`, run: () => {
+        state.refreshedAt = new Date();
+        say('Refreshed', 'Clients, projects and tasks are fetched again. Ratchet also does this by itself when the menu opens on stale data.');
+      } },
+      { label: 'Launch at login', check: state.launchAtLogin, run: () => {
+        state.launchAtLogin = !state.launchAtLogin;
+        say(`Launch at login ${state.launchAtLogin ? 'on' : 'off'}`, state.launchAtLogin
+          ? 'Ratchet will start when you log in to your Mac.'
+          : 'Ratchet will no longer start when you log in.');
+      } },
+      SEP,
+      { label: 'Open FreeAgent', run: () => say('Open FreeAgent', 'Opens FreeAgent in your browser.') },
+      SEP,
+      { label: 'Log out', run: logOut },
+    ];
+  }
+
+  const quit = { label: 'Quit', key: '⌘Q', run: () => say('Quit', state.screen === 'tracking'
+    ? 'Quits Ratchet. The timer runs in FreeAgent, so it keeps going and Ratchet shows it again on next launch.'
+    : 'Quits Ratchet.') };
+
+  function rootItems() {
+    if (state.screen === 'loggedOut') {
+      return [{ label: 'Log in with browser', run: logIn }, SEP, quit];
+    }
+    const shared = [
+      SEP,
+      { label: 'Log past time', items: logPicker },
+      { label: 'Recent time entries', items: recentItems },
+      SEP,
+      { label: 'Settings', items: settingsItems },
+      quit,
+    ];
+    if (state.screen === 'tracking') {
+      const r = state.current;
+      return [
+        { label: elapsed(running()), disabled: true, elapsed: true },
+        { label: `Stop tracking ${r.task}`, sub: `${r.client} · ${r.project}`, icon: 'stop', run: stop },
+        { label: 'Switch task', items: switchPicker },
+        ...shared,
+      ];
+    }
+    const r = state.last;
+    return [
+      ...(r ? [{ label: `Start tracking ${r.task}`, sub: `${r.client} · ${r.project}`, icon: 'play', run: () => start(r) }] : []),
+      { label: 'Start timer', items: startPicker },
+      ...shared,
+    ];
+  }
+
+  // ---- Menu rendering and interaction ----
+  const NS = 'http://www.w3.org/2000/svg';
+  const ICONS = {
+    play: 'M2 1.2v9.6c0 .5.5.8.9.5l7.6-4.8c.4-.3.4-.8 0-1L2.9.7C2.5.4 2 .7 2 1.2z',
+    stop: 'M2.5 1.5h7a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z',
+    check: 'M1.2 6.4l1-1 2.4 2.3L9.8 2.4l1 1-6.2 6.3z',
+  };
+  function svgIcon(d, viewBox = '0 0 12 12') {
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', viewBox);
+    svg.setAttribute('aria-hidden', 'true');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', d);
+    svg.append(p);
+    return svg;
+  }
+  function span(cls, ...children) {
+    const s = document.createElement('span');
+    s.className = cls;
+    s.append(...children);
+    return s;
+  }
+
+  const button = document.getElementById('ratchet-item');
+  const host = button.parentElement;
+  const wide = matchMedia('(min-width: 900px) and (hover: hover)');
+  let root = null;
+
+  function build(items) {
+    const menu = document.createElement('div');
+    menu.className = 'menu';
+    menu.setAttribute('role', 'menu');
+    menu.tabIndex = -1;
+    if (items.some(i => i.icon || 'check' in i)) menu.classList.add('has-gutter');
+    for (const item of items) {
+      if (item.sep) {
+        const s = document.createElement('div');
+        s.className = 'sep';
+        s.setAttribute('role', 'separator');
+        menu.append(s);
+        continue;
+      }
+      if (item.header) {
+        const h = document.createElement('div');
+        h.className = 'header';
+        h.setAttribute('role', 'presentation');
+        h.textContent = item.header;
+        menu.append(h);
+        continue;
+      }
+      const mi = document.createElement('div');
+      mi.className = 'mi';
+      mi.setAttribute('role', 'none');
+      mi.item = item;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'item' + (item.elapsed ? ' elapsed' : '');
+      b.tabIndex = -1;
+      if ('check' in item) {
+        b.setAttribute('role', 'menuitemcheckbox');
+        b.setAttribute('aria-checked', String(item.check));
+      } else {
+        b.setAttribute('role', 'menuitem');
+      }
+      if (item.disabled) b.setAttribute('aria-disabled', 'true');
+      const gutter = span('gutter');
+      if (item.icon) gutter.append(svgIcon(ICONS[item.icon]));
+      if (item.check) gutter.append(svgIcon(ICONS.check));
+      const label = span('label', item.label);
+      if (item.sub) label.append(span('line2', item.sub));
+      b.append(gutter, label);
+      if (item.key) b.append(span('key', item.key));
+      if (item.items) {
+        b.setAttribute('aria-haspopup', 'menu');
+        b.setAttribute('aria-expanded', 'false');
+        b.append(span('chev', svgIcon('M1.5 1.5l4 4-4 4', '0 0 7 11')));
+      }
+      mi.append(b);
+      menu.append(mi);
+    }
+    return menu;
+  }
+
+  const enabledItems = menu => [...menu.querySelectorAll(':scope > .mi > .item:not([aria-disabled="true"])')];
+
+  function closeSub(mi) {
+    mi.classList.remove('open');
+    mi.querySelector(':scope > .item').setAttribute('aria-expanded', 'false');
+    mi.querySelector(':scope > .menu')?.remove();
+  }
+  function openSub(mi) {
+    for (const sib of mi.parentElement.querySelectorAll(':scope > .mi.open')) if (sib !== mi) closeSub(sib);
+    if (mi.classList.contains('open')) return mi.querySelector(':scope > .menu');
+    const sub = build(mi.item.items());
+    mi.append(sub);
+    mi.classList.add('open');
+    mi.querySelector(':scope > .item').setAttribute('aria-expanded', 'true');
+    return sub;
+  }
+
+  let ticker = 0;
+  function openRoot(viaKeyboard) {
+    root = build(rootItems());
+    root.classList.add('menu-root');
+    root.id = 'ratchet-menu';
+    root.setAttribute('aria-label', 'Ratchet');
+    root.classList.toggle('inline', !wide.matches);
+    host.append(root);
+    if (wide.matches) {
+      const at = button.getBoundingClientRect().left;
+      root.style.left = Math.max(8, Math.min(at, innerWidth - root.offsetWidth - 8)) + 'px';
+    }
+    button.setAttribute('aria-expanded', 'true');
+    button.setAttribute('aria-controls', 'ratchet-menu');
+    html.classList.add('tried');
+    (viaKeyboard ? enabledItems(root)[0] : root)?.focus({ preventScroll: true });
+    ticker = setInterval(() => {
+      const row = root?.querySelector('.item.elapsed .label');
+      if (row && state.screen === 'tracking') row.textContent = elapsed(running());
+    }, 1000);
+  }
+  function closeRoot(refocus) {
+    if (!root) return;
+    clearInterval(ticker);
+    root.remove();
+    root = null;
+    button.setAttribute('aria-expanded', 'false');
+    button.removeAttribute('aria-controls');
+    if (refocus) button.focus({ preventScroll: true });
+  }
+
+  button.addEventListener('click', e => {
+    if (root) closeRoot(false);
+    else openRoot(e.detail === 0);
+  });
+  button.addEventListener('keydown', e => {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !root) {
+      e.preventDefault();
+      openRoot(true);
+    }
+  });
+
+  host.addEventListener('click', e => {
+    const b = e.target.closest('.menu .item');
+    if (!b || b.getAttribute('aria-disabled') === 'true') return;
+    const mi = b.parentElement;
+    if (mi.item.items) {
+      if (mi.classList.contains('open') && !wide.matches) closeSub(mi);
+      else {
+        const sub = openSub(mi);
+        if (e.detail === 0) enabledItems(sub)[0]?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const run = mi.item.run;
+    closeRoot(e.detail === 0);
+    run();
+    render();
+  });
+
+  host.addEventListener('mouseover', e => {
+    if (!wide.matches) return;
+    const b = e.target.closest('.menu .item');
+    if (!b) return;
+    const mi = b.parentElement;
+    if (b.getAttribute('aria-disabled') !== 'true') b.focus({ preventScroll: true });
+    else document.activeElement?.closest('.menu') === mi.parentElement && mi.parentElement.focus({ preventScroll: true });
+    if (mi.item.items && b.getAttribute('aria-disabled') !== 'true') openSub(mi);
+    else for (const sib of mi.parentElement.querySelectorAll(':scope > .mi.open')) closeSub(sib);
+  });
+
+  host.addEventListener('keydown', e => {
+    if (!root || !root.contains(e.target)) return;
+    const menu = e.target.closest('.menu');
+    const items = enabledItems(menu);
+    const i = items.indexOf(e.target);
+    const mi = e.target.classList.contains('item') ? e.target.parentElement : null;
+    const parentMi = menu.parentElement.closest('.mi');
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        e.preventDefault();
+        if (!items.length) return;
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        const next = i < 0 ? (step > 0 ? 0 : items.length - 1) : (i + step + items.length) % items.length;
+        items[next].focus({ preventScroll: true });
+        break;
+      }
+      case 'ArrowRight':
+        if (mi?.item.items && e.target.getAttribute('aria-disabled') !== 'true') {
+          e.preventDefault();
+          enabledItems(openSub(mi))[0]?.focus({ preventScroll: true });
+        }
+        break;
+      case 'ArrowLeft':
+      case 'Escape':
+        e.preventDefault();
+        if (parentMi) {
+          closeSub(parentMi);
+          parentMi.querySelector(':scope > .item').focus({ preventScroll: true });
+        } else {
+          closeRoot(true);
+        }
+        break;
+      case 'Tab':
+        // Back on the status item first, so the browser's own Tab move starts from there.
+        closeRoot(true);
+        break;
+    }
+  });
+
+  document.addEventListener('pointerdown', e => {
+    if (root && !host.contains(e.target)) closeRoot(false);
+  });
+  // Width only: mobile browsers fire resize as their toolbars slide in and out.
+  let lastWidth = innerWidth;
+  addEventListener('resize', () => {
+    if (innerWidth !== lastWidth) closeRoot(false);
+    lastWidth = innerWidth;
+  });
+  wide.addEventListener('change', () => closeRoot(false));
+
+  function render() {
+    html.classList.toggle('is-tracking', state.screen === 'tracking');
+    button.title = state.screen === 'tracking'
+      ? `${elapsed(running())}\nTracking ${state.current.task}\n${state.current.client} · ${state.current.project}`
+      : state.screen === 'idle' ? 'Idle' : '';
+  }
+  setInterval(() => { if (state.screen === 'tracking') render(); }, 15e3);
+
+  // ---- Menu bar clock ----
+  const dateEl = document.querySelector('.clock .date');
+  const timeEl = document.querySelector('.clock .time');
+  function clock() {
+    const now = new Date();
+    dateEl.textContent = now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
+    timeEl.textContent = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  }
+  clock();
+  setInterval(clock, 10e3);
+
+  addEventListener('scroll', () => html.classList.toggle('scrolled', scrollY > 120), { passive: true });
+
+  render();
+})();
+</script>
+</body>
+</html>
