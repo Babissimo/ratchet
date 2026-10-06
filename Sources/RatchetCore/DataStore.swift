@@ -77,6 +77,9 @@ public protocol DataStore: AnyObject {
         endsOn: Date?
     ) async throws -> RatchetProject
 
+    /// Throws `DataStoreError.unconfirmed` when it can't tell whether FreeAgent logged the entry,
+    /// and `DataStoreError.alreadyLogged` when a later identical call finds that it did; the entry
+    /// is then in `timeslips`.
     func logTime(
         taskId: String,
         projectId: String,

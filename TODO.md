@@ -131,12 +131,10 @@ that constraint; each item notes what it costs to skip signing.
   timeslip's `hours`, so it would otherwise show a stale, paused-at
   duration).
 
-- [ ] **Duplicate timeslips when a create response is lost.** If the network drops after FreeAgent
-  processes `POST /timeslips` but before the response arrives, the entry exists server-side with
-  no local record, and retrying "Log past time" creates a second one. `startTimer` self-heals
-  (its next call re-queries the running view and adopts what it finds); `logTime` has no
-  equivalent. A real fix needs either an idempotency key or a post-failure reconciliation query
-  against the same task/day/hours — worth doing before Ratchet is used for anything invoiced.
+- [ ] **Duplicate clients, projects or tasks when a create response is lost.**
+  `addClient`, `addProject` and `addTask` (including the task half of "New
+  task & log time") have no equivalent of `logTime`'s lost-create lookup, so
+  retrying after a dropped response creates a second one.
 
 ## Not blocking, revisit later
 

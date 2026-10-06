@@ -135,11 +135,13 @@ public struct FreeAgentTimeslipDTO: Codable {
     /// and timeslip PUT replies in particular — and a missing timestamp must not fail the
     /// whole decode of an otherwise usable record.
     public let updatedAt: Date?
+    /// Server time (UTC). Optional for the same reason as `updatedAt`.
+    public let createdAt: Date?
 
     public init(
         url: String, project: String, task: String, user: String, datedOn: String, hours: String,
         comment: String?, timer: FreeAgentTimerDTO?, billedOnInvoice: String? = nil,
-        updatedAt: Date? = nil
+        updatedAt: Date? = nil, createdAt: Date? = nil
     ) {
         self.url = url
         self.project = project
@@ -151,6 +153,7 @@ public struct FreeAgentTimeslipDTO: Codable {
         self.timer = timer
         self.billedOnInvoice = billedOnInvoice
         self.updatedAt = updatedAt
+        self.createdAt = createdAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -159,6 +162,7 @@ public struct FreeAgentTimeslipDTO: Codable {
         case hours, comment, timer
         case billedOnInvoice = "billed_on_invoice"
         case updatedAt = "updated_at"
+        case createdAt = "created_at"
     }
 }
 

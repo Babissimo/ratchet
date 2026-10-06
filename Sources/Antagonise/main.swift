@@ -6,7 +6,8 @@
 // store; 11-15 cover staleness (a stopped timer reaching "Recent time entries", the idle screen
 // keeping the last task across a restart, and a local write forcing the next refresh); 16-19
 // cover the "Start tracking …" offer itself (following history, yielding to a running timer,
-// and dropping a task, project or client that has gone). Each drives the real `FreeAgentDataStore`
+// and dropping a task, project or client that has gone); 20-23 cover a "Log past time" create
+// whose response is lost, which a retry must not log twice. Each drives the real `FreeAgentDataStore`
 // against a scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a
 // regression. Exits non-zero if any scenario fails.
 //
@@ -15,7 +16,7 @@
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all nineteen
+//     swift run Antagonise          # all twenty-three
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -764,6 +765,216 @@ final class FakeMostRecentStore: MostRecentTaskStore {
     else { bad("dead ref left on disk: \(disk.stored!.taskName)") }
 }
 
+/// FreeAgent's timeslip store in miniature, for scenarios where a create has to land server-side
+/// before anything goes wrong: `POST /timeslips` is applied first, then faults are injected, and
+/// timeslip lists are answered from what was applied. Everything else falls through to `inner`.
+@MainActor
+final class TimeslipServer: FreeAgentTransport {
+    enum CreateFault { case none, loseResponse, neverArrives, cannotConnect }
+    let inner: Stub
+    var createFault = CreateFault.none
+    /// Faults for the next creates in turn, ahead of `createFault`.
+    var createFaults: [CreateFault] = []
+    /// After the next create is applied, drops its response and every request after it, as if
+    /// the network went down with the response in flight and stayed down.
+    var offlineAfterCreate = false
+    var offline = false
+    private(set) var slips: [[String: Any]] = []
+    /// Every create sent, whether or not it arrived.
+    private(set) var posts = 0
+    private(set) var lookups = 0
+    /// `lookups` as each create was sent, so a scenario can tell what each create waited for.
+    private(set) var lookupsAtCreate: [Int] = []
+    init(inner: Stub) { self.inner = inner }
+
+    nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let answer = try await answer(request) { return answer }
+        return try await inner.send(request)
+    }
+
+    private func answer(_ request: URLRequest) throws -> (Data, HTTPURLResponse)? {
+        let url = request.url!
+        let isTimeslips = url.path.hasSuffix("/v2/timeslips")
+        if isTimeslips, request.httpMethod == "POST" { posts += 1; lookupsAtCreate.append(lookups) }
+        if offline { throw URLError(.notConnectedToInternet) }
+        guard isTimeslips else { return nil }
+        if request.httpMethod == "POST" {
+            let createFault = createFaults.isEmpty ? createFault : createFaults.removeFirst()
+            if createFault == .cannotConnect { throw URLError(.cannotConnectToHost) }
+            if createFault == .neverArrives { throw URLError(.notConnectedToInternet) }
+            let envelope = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: [String: Any]]
+            var slip = envelope?["timeslip"] ?? [:]
+            let now = ISO8601DateFormatter().string(from: Date())
+            slip["url"] = "\(U)/timeslips/\(1000 + slips.count)"
+            slip["timer"] = NSNull()
+            slip["billed_on_invoice"] = NSNull()
+            slip["created_at"] = now
+            slip["updated_at"] = now
+            slips.append(slip)
+            if offlineAfterCreate { offline = true; throw URLError(.networkConnectionLost) }
+            if createFault == .loseResponse { throw URLError(.networkConnectionLost) }
+            return try respond(request, ["timeslip": slip], status: 201)
+        }
+        let query = Dictionary(
+            (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") },
+            uniquingKeysWith: { _, last in last }
+        )
+        guard query["view"] == nil else { return nil }
+        if query["task"] != nil { lookups += 1 }
+        let listed = slips.filter { slip in
+            let day = slip["dated_on"] as? String ?? ""
+            return ["task", "project", "user"].allSatisfy { key in query[key].map { $0 == slip[key] as? String } ?? true }
+                && (query["from_date"].map { day >= $0 } ?? true)
+                && (query["to_date"].map { day <= $0 } ?? true)
+        }
+        return try respond(request, ["timeslips": listed], status: 200)
+    }
+
+    private func respond(_ request: URLRequest, _ object: Any, status: Int) throws -> (Data, HTTPURLResponse) {
+        (try JSONSerialization.data(withJSONObject: object),
+         HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+
+    var ids: [String] { slips.compactMap { $0["url"] as? String } }
+}
+
+@MainActor
+func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws -> RatchetTimeslip {
+    try await store.logTime(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1",
+                            date: date, hours: 1.5, comment: "Wireframes")
+}
+
+@MainActor func s20() async throws {
+    hdr(20, "A create whose response is lost must be adopted, not logged twice")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    let (store, ts) = makeStore(server); defer { ts.clear() }
+    try await store.refresh()
+
+    server.createFault = .loseResponse
+    let logged: RatchetTimeslip
+    do { logged = try await logTask1(store) } catch {
+        bad("the lost create surfaced as an error, so retrying it would log a duplicate: \(error)"); return
+    }
+    print("   server holds \(server.ids); logTime returned \(logged.id)")
+    if server.slips.count == 1 { ok("exactly one entry exists server-side") }
+    else { bad("\(server.slips.count) entries server-side") }
+    if store.timeslips.map(\.id) == server.ids { ok("and the local cache holds it") }
+    else { bad("local cache holds \(store.timeslips.map(\.id))") }
+
+    server.createFault = .none
+    _ = try await logTask1(store)
+    if server.slips.count == 2 { ok("logging the same entry again on purpose still creates a second") }
+    else { bad("a deliberate second identical entry left \(server.slips.count) server-side") }
+}
+
+@MainActor func s21() async throws {
+    hdr(21, "A lost create that can't be checked must be checked before it is posted again")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    let (store, ts) = makeStore(server); defer { ts.clear() }
+    try await store.refresh()
+
+    server.offlineAfterCreate = true
+    do { _ = try await logTask1(store); bad("reported success with nothing confirmed") } catch {
+        print("   still offline -> \(error)")
+        if case DataStoreError.unconfirmed = error { ok("the error says the entry may exist, not that it failed") }
+        else { bad("the error reads as a plain failure, inviting a blind retry") }
+    }
+    server.offlineAfterCreate = false
+    do { _ = try await logTask1(store); bad("a retry while offline reported success") } catch {
+        if server.posts == 1 { ok("a retry while still offline posts nothing") }
+        else { bad("a retry while offline posted again (\(server.posts) POSTs)") }
+    }
+
+    // Back online. The same entry again is either the retry or a deliberate second, so the
+    // user is told it was already there rather than shown a bare "Time Logged".
+    server.offline = false
+    do {
+        let retried = try await logTask1(store)
+        bad("reported \(retried.id) as newly logged, hiding that it was the earlier attempt's entry")
+    } catch DataStoreError.alreadyLogged {
+        ok("the retry reports the entry as already logged")
+    } catch {
+        bad("the retry threw \(error), not alreadyLogged")
+    }
+    print("   back online: server holds \(server.ids); POSTs \(server.posts)")
+    if server.slips.count == 1, server.posts == 1 { ok("and adopted it instead of posting a duplicate") }
+    else { bad("\(server.slips.count) entries server-side after the retry") }
+    if store.timeslips.map(\.id) == server.ids { ok("and the local cache holds it") }
+    else { bad("local cache holds \(store.timeslips.map(\.id))") }
+
+    _ = try await logTask1(store)
+    if server.slips.count == 2 { ok("once settled, the same entry can be logged again on purpose") }
+    else { bad("\(server.slips.count) entries after a deliberate second") }
+}
+
+@MainActor func s22() async throws {
+    hdr(22, "A create that never arrived must not adopt an identical entry logged just before it")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    let (store, ts) = makeStore(server); defer { ts.clear() }
+    try await store.refresh()
+
+    let first = try await logTask1(store)
+    server.createFault = .neverArrives
+    do { _ = try await logTask1(store); bad("adopted \(first.id) as the second entry, which was never created") } catch {
+        print("   second create never arrived -> \(error)")
+        ok("the earlier identical entry was not mistaken for this one")
+    }
+    server.createFault = .none
+    _ = try await logTask1(store)
+    print("   after the retry: server holds \(server.ids)")
+    if server.slips.count == 2 { ok("the retry logged the second entry") }
+    else { bad("\(server.slips.count) entries server-side, expected 2") }
+
+    // A failure to connect means nothing was sent, so there is nothing to look for.
+    server.createFault = .cannotConnect
+    let lookupsBefore = server.lookups
+    _ = try? await logTask1(store)
+    if server.lookups == lookupsBefore { ok("a create that couldn't connect isn't looked for") }
+    else { bad("looked for the result of a create that was never sent") }
+
+    // A back-dated entry falls outside refresh()'s window, so the next refresh drops it from the
+    // cache; it is still Ratchet's own, and still not this request's.
+    server.createFault = .none
+    let monthAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+    let backDated = try await logTask1(store, on: monthAgo)
+    try await store.refresh()
+    server.createFault = .neverArrives
+    do { _ = try await logTask1(store, on: monthAgo); bad("adopted the back-dated \(backDated.id), which left the cache at the refresh") }
+    catch { ok("nor is a back-dated entry the cache no longer holds") }
+}
+
+@MainActor func s23() async throws {
+    hdr(23, "An identical create sent while another is unsettled must wait for it, not race it")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    let (store, ts) = makeStore(server); defer { ts.clear() }
+    try await store.refresh()
+
+    // The first never arrives; the second is submitted while the first is still in flight.
+    server.createFaults = [.neverArrives]
+    let first = Task { try await logTask1(store) }
+    let second = Task { try await logTask1(store) }
+    let firstResult = await first.result
+    let secondResult = await second.result
+    print("   creates sent after \(server.lookupsAtCreate) lookups; server holds \(server.ids)")
+
+    if case .failure(DataStoreError.unconfirmed) = firstResult { ok("the first is reported unconfirmed") }
+    else { bad("the first ended \(firstResult), not unconfirmed") }
+    // Racing, the second posts before the first is settled: the first's lookup can then adopt
+    // the second's entry, and the second's success clears the first's record.
+    if server.lookupsAtCreate == [0, 2] { ok("the second was sent only after the first was settled and checked again") }
+    else { bad("the second create raced the first (lookups at each create: \(server.lookupsAtCreate))") }
+    if case .success(let logged) = secondResult, server.ids == [logged.id] { ok("and logged its own entry") }
+    else { bad("the second ended \(secondResult) with \(server.ids) server-side") }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -789,6 +1000,10 @@ Task { @MainActor in
         if want(17) { try await s17() }
         if want(18) { try await s18() }
         if want(19) { try await s19() }
+        if want(20) { try await s20() }
+        if want(21) { try await s21() }
+        if want(22) { try await s22() }
+        if want(23) { try await s23() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)
