@@ -78,7 +78,8 @@ extension FreeAgentTimeslipDTO {
             timerStartedAt: (timer?.running == true) ? timer?.startFrom : nil,
             hours: Double(hours) ?? 0,
             comment: comment,
-            isInvoiced: billedOnInvoice != nil
+            isInvoiced: billedOnInvoice != nil,
+            updatedAt: updatedAt
         )
     }
 }

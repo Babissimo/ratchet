@@ -131,10 +131,15 @@ public struct FreeAgentTimeslipDTO: Codable {
     /// URI of the invoice this timeslip has been billed on, if any — FreeAgent's only signal
     /// that a timeslip is invoiced (there's no separate status field).
     public let billedOnInvoice: String?
+    /// Optional because not every timeslip-bearing response carries it — the `POST /timer`
+    /// and timeslip PUT replies in particular — and a missing timestamp must not fail the
+    /// whole decode of an otherwise usable record.
+    public let updatedAt: Date?
 
     public init(
         url: String, project: String, task: String, user: String, datedOn: String, hours: String,
-        comment: String?, timer: FreeAgentTimerDTO?, billedOnInvoice: String? = nil
+        comment: String?, timer: FreeAgentTimerDTO?, billedOnInvoice: String? = nil,
+        updatedAt: Date? = nil
     ) {
         self.url = url
         self.project = project
@@ -145,6 +150,7 @@ public struct FreeAgentTimeslipDTO: Codable {
         self.comment = comment
         self.timer = timer
         self.billedOnInvoice = billedOnInvoice
+        self.updatedAt = updatedAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -152,6 +158,7 @@ public struct FreeAgentTimeslipDTO: Codable {
         case datedOn = "dated_on"
         case hours, comment, timer
         case billedOnInvoice = "billed_on_invoice"
+        case updatedAt = "updated_at"
     }
 }
 

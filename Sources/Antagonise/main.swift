@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Sources/Antagonise/main.swift
 //
-// Dev-only regression harness for the nine ways Ratchet's in-memory state could silently
-// disagree with FreeAgent's, fixed across cbcb28f..64853c6. Each scenario drives the real
-// `FreeAgentDataStore` against a scriptable stub transport and asserts the *fixed* behaviour, so
-// a `BUG` line means a regression. Exits non-zero if any scenario fails.
+// Dev-only regression harness for the ways Ratchet's in-memory state could silently disagree
+// with FreeAgent's, or go stale against it. Scenarios 1-10 cover local/remote divergence in the
+// store; 11-15 cover staleness (a stopped timer reaching "Recent time entries", the idle screen
+// keeping the last task across a restart, and a local write forcing the next refresh); 16-19
+// cover the "Start tracking …" offer itself (following history, yielding to a running timer,
+// and dropping a task, project or client that has gone). Each drives the real `FreeAgentDataStore`
+// against a scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a
+// regression. Exits non-zero if any scenario fails.
 //
 // This is an executable rather than an XCTest case because `swift test` cannot run on a machine
 // without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
-// `AppState`, or `restoreRunningTimer`:
+// `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all nine
+//     swift run Antagonise          # all nineteen
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -19,6 +23,7 @@
 //
 //     security dump-keychain 2>/dev/null | grep -o 'com\.ratchet\.antagonise\.[A-F0-9-]*' \
 //       | sort -u | while read s; do security delete-generic-password -s "$s" >/dev/null 2>&1; done
+import AppKit
 import Foundation
 import FreeAgentKit
 import RatchetCore
@@ -92,9 +97,13 @@ func tasks(_ ids: [Int] = [1, 2]) -> String {
     let body = ids.map { #"{"url":"\#(U)/tasks/\#($0)","project":"\#(U)/projects/1","name":"Task\#($0)","is_billable":true,"status":"Active","billing_rate":null,"billing_period":null}"# }.joined(separator: ",")
     return #"{"tasks":[\#(body)]}"#
 }
-func slip(id: Int, task: Int, hours: String, datedOn: String, timerStart: String?) -> String {
+/// `updatedAt` is the tie-break `MostRecentTask.resolve` uses *within* a day, so scenarios that
+/// need a deterministic order among same-day entries have to supply it; omitted, it decodes as
+/// nil, which sorts as `distantPast`.
+func slip(id: Int, task: Int, hours: String, datedOn: String, timerStart: String?, updatedAt: String? = nil) -> String {
     let timer = timerStart.map { #""timer":{"running":true,"start_from":"\#($0)"}"# } ?? #""timer":null"#
-    return #"{"url":"\#(U)/timeslips/\#(id)","project":"\#(U)/projects/1","task":"\#(U)/tasks/\#(task)","user":"\#(U)/users/1","dated_on":"\#(datedOn)","hours":"\#(hours)","comment":null,\#(timer),"billed_on_invoice":null}"#
+    let updated = updatedAt.map { #","updated_at":"\#($0)""# } ?? ""
+    return #"{"url":"\#(U)/timeslips/\#(id)","project":"\#(U)/projects/1","task":"\#(U)/tasks/\#(task)","user":"\#(U)/users/1","dated_on":"\#(datedOn)","hours":"\#(hours)","comment":null,\#(timer),"billed_on_invoice":null\#(updated)}"#
 }
 func today() -> String { CalendarDay.dayString(from: Date()) }
 
@@ -127,27 +136,6 @@ let acmeRef = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
                              projectId: "\(U)/projects/1", projectName: "Site",
                              taskId: "\(U)/tasks/1", taskName: "Task1")
 
-/// Line-for-line replica of Ratchet/AppDelegate.restoreRunningTimer — the executable target
-/// can't be imported, so this must be kept in step with it by hand.
-@MainActor
-func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppState) {
-    guard let running = dataStore.currentRunningTimeslip else {
-        if appState.trackingTask != nil { appState.stopTracking() }
-        return
-    }
-    let client = dataStore.clients.first { $0.id == running.clientId }
-    let project = client?.projects.first { $0.id == running.projectId }
-    let task = project?.tasks.first { $0.id == running.taskId }
-    let isFullyResolved = task != nil
-    let ref = TrackedTaskRef(
-        clientId: running.clientId, clientName: client?.name ?? "Unknown client",
-        projectId: running.projectId, projectName: project?.name ?? "Unknown project",
-        taskId: running.taskId, taskName: task?.name ?? "Unknown task"
-    )
-    if running.timerStartedAt == nil, appState.trackingTask == ref { return }
-    appState.startTracking(ref, startedAt: running.timerStartedAt ?? Date(), recordAsMostRecent: isFullyResolved)
-}
-
 // MARK: - Scenarios
 
 @MainActor func s1() async throws {
@@ -156,10 +144,13 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
     let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
     baseRules(stub, running: running, recent: "[\(running)]")
     stub.setRule("timeslips/9/timer", body: "{}")
+    // `stopTimer` re-reads the settled timeslip after the DELETE, to pick up the hours the
+    // server finally recorded — see its comment.
+    stub.setRule("timeslips/9", body: #"{"timeslip":\#(slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil))}"#)
     let gate = GatedStub(inner: stub, gateMatch: "view=running")
     let (store, ts) = makeStore(gate); defer { ts.clear() }
     try await store.refresh()
-    let app = AppState(); app.logIn(); restoreRunningTimer(from: store, into: app)
+    let app = AppState(); app.logIn(); app.reconcile(with: store)
     print("   after first refresh: tracking = \(app.trackingTask != nil)")
 
     gate.armed = true
@@ -170,7 +161,7 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
     print("   user stopped: running = \(store.currentRunningTimeslip?.id ?? "nil")")
     gate.release()
     _ = await inFlight.value
-    restoreRunningTimer(from: store, into: app)
+    app.reconcile(with: store)
     if store.currentRunningTimeslip == nil, app.trackingTask == nil { ok("the stop survived the concurrent refresh") }
     else { bad("stale refresh resurrected the stopped timer: running=\(store.currentRunningTimeslip?.id ?? "nil")") }
 }
@@ -195,7 +186,7 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
     print("   user started: running = \(store.currentRunningTimeslip?.id ?? "nil")")
     gate.release()
     _ = await inFlight.value
-    restoreRunningTimer(from: store, into: app)
+    app.reconcile(with: store)
     if store.currentRunningTimeslip != nil, app.trackingTask != nil { ok("the start survived the concurrent refresh") }
     else { bad("in-flight refresh erased the just-started timer") }
 }
@@ -288,13 +279,33 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
     try await store.refresh()
     let app = AppState(); app.logIn()
     print("   server says running: \(store.currentRunningTimeslip!.id) on tasks/7 (not in the local tree)")
-    restoreRunningTimer(from: store, into: app)
+    app.reconcile(with: store)
     if case .tracking(let t, _) = app.screen { ok("still tracking, labelled \"\(t.taskName)\" — Stop stays reachable") }
     else { bad("dropped to idle with a timer still running server-side: \(app.screen)") }
     // The placeholder must not become the idle screen's "Start tracking …" row.
     app.stopTracking()
     if case .idleNoHistory = app.screen { ok("placeholder did not pollute most-recent") }
     else { bad("placeholder leaked into most-recent: \(app.screen)") }
+
+    // A running timeslip with no timer start counts from adoption, and has to keep that instant
+    // when a later refresh can name its task: re-stamping it would reset the elapsed time.
+    let undated = slip(id: 501, task: 7, hours: "0.0", datedOn: today(), timerStart: nil)
+    let stub2 = Stub()
+    baseRules(stub2, running: undated, recent: "[\(undated)]")
+    let (store2, ts2) = makeStore(stub2); defer { ts2.clear() }
+    var now = Date(timeIntervalSince1970: 1_000_000)
+    let app2 = AppState(clock: { now }); app2.logIn()
+    try await store2.refresh()
+    app2.reconcile(with: store2)
+    let adoptedAt = app2.trackingStartedAtForTesting
+    now = now.addingTimeInterval(120)
+    stub2.setRule("/tasks?", body: tasks([1, 2, 7]))
+    try await store2.refresh()
+    app2.reconcile(with: store2)
+    if app2.trackingTask?.taskName == "Task7" { ok("an undated timer's placeholder is renamed once the tree names it") }
+    else { bad("still labelled \(app2.trackingTask?.taskName ?? "nothing")") }
+    if adoptedAt != nil, app2.trackingStartedAtForTesting == adoptedAt { ok("and keeps the start it was adopted with") }
+    else { bad("elapsed time re-based: adopted \(String(describing: adoptedAt)), now \(String(describing: app2.trackingStartedAtForTesting))") }
 }
 
 @MainActor func s8() async throws {
@@ -362,6 +373,397 @@ func restoreRunningTimer(from dataStore: FreeAgentDataStore, into appState: AppS
     else { bad("newly logged entry landed out of order: \(after)") }
 }
 
+@MainActor func s11() async throws {
+    hdr(11, "A just-stopped timer must appear in Recent time entries immediately")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    // Registered before the bare "v2/timeslips" create rule below: a GET of
+    // .../v2/timeslips/42 contains both matches, and rules are first-match-wins in
+    // registration order.
+    stub.setRule("timeslips/42", body: #"{"timeslip":\#(slip(id: 42, task: 1, hours: "1.5", datedOn: today(), timerStart: nil))}"#)
+    stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 42, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+
+    // Start: creates timeslip 42 for today and runs its timer.
+    stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 42, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    _ = try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    // The server now reports it as running, and has accrued 1.5h by the time it is stopped.
+    stub.setRule("view=running", body: #"{"timeslips":[\#(slip(id: 42, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))]}"#)
+    print("   timeslips before stop: \(store.timeslips.map(\.id))")
+
+    _ = try await store.stopTimer()
+    let stopped = store.timeslips.first { $0.id == "\(U)/timeslips/42" }
+    if let stopped {
+        ok("the stopped entry is in `timeslips`")
+        if stopped.hours == 1.5 { ok("with the hours the server finally recorded") }
+        else { bad("with stale hours \(stopped.hours), not the server's 1.5") }
+        if stopped.timerStartedAt == nil { ok("and no longer marked as running") }
+        else { bad("still carries timerStartedAt \(stopped.timerStartedAt!)") }
+    } else {
+        bad("the stopped entry is missing from `timeslips`: \(store.timeslips.map(\.id))")
+    }
+}
+
+@MainActor func s12() async throws {
+    hdr(12, "After a restart with nothing running, the last tracked task must still be offerable")
+    let stub = Stub()
+    let older = slip(id: 100, task: 1, hours: "2.0", datedOn: "2026-08-10", timerStart: nil)
+    let newest = slip(id: 101, task: 2, hours: "3.0", datedOn: "2026-08-18", timerStart: nil)
+    baseRules(stub, running: nil, recent: "[\(older),\(newest)]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+
+    // Exactly the launch path: stored tokens -> logIn -> refresh -> reconcile.
+    let app = AppState(); app.logIn()
+    try await store.refresh()
+    app.reconcile(with: store)
+    print("   timeslips after launch refresh: \(store.timeslips.map(\.id))")
+    print("   screen: \(app.screen)")
+
+    switch app.screen {
+    case .idle(let mostRecent):
+        if mostRecent.taskId == "\(U)/tasks/2" { ok("the idle screen offers the last task worked on (Task2)") }
+        else { bad("offers \(mostRecent.taskName), not the most recent Task2") }
+    case .idleNoHistory:
+        bad("idle screen has no history, so there is no `Start tracking …` row after a restart")
+    default:
+        bad("unexpected screen \(app.screen)")
+    }
+
+    // A remembered offer is on screen before the launch refresh lands, so starting it has to
+    // wait for that refresh rather than fail for want of an account, and must not make the
+    // refresh discard its own result.
+    let cold = Stub()
+    baseRules(cold, running: nil, recent: "[]")
+    cold.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 102, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    cold.setRule("/timer", body: #"{"timeslip":\#(slip(id: 102, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    let gate = GatedStub(inner: cold, gateMatch: "view=running")
+    let (coldStore, ts2) = makeStore(gate); defer { ts2.clear() }
+    gate.armed = true
+    let launchRefresh = Task { @MainActor in try? await coldStore.refresh() }
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    let start = Task { @MainActor in
+        try await coldStore.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    }
+    // Let the start reach the account check while the launch refresh is still held.
+    for _ in 0..<5 { await Task.yield() }
+    gate.release()
+    _ = await launchRefresh.value
+    do {
+        _ = try await start.value
+        ok("starting before the launch refresh lands waits for it, then succeeds")
+    } catch {
+        bad("starting before the launch refresh landed failed: \(error)")
+    }
+    if coldStore.lastRefreshedAt != nil { ok("and the launch refresh still committed") }
+    else { bad("the start made the launch refresh discard its result") }
+
+    // A second click while that start waits must queue behind it: two starts at once can each
+    // find no timeslip for today and create one apiece.
+    let twice = Stub()
+    baseRules(twice, running: nil, recent: "[]")
+    twice.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 103, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    twice.setRule("/timer", body: #"{"timeslip":\#(slip(id: 103, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    let (twiceStore, ts3) = makeStore(twice); defer { ts3.clear() }
+    try await twiceStore.refresh()
+    twice.log = []
+    let first = Task { @MainActor in
+        try await twiceStore.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    }
+    let second = Task { @MainActor in
+        try await twiceStore.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    }
+    _ = try? await first.value
+    _ = try? await second.value
+    let calls = twice.log.map { "\($0.method) \($0.url)" }
+    let firstTimerStart = calls.firstIndex { $0.hasPrefix("POST") && $0.hasSuffix("/timer") }
+    let secondRunningCheck = calls.indices.filter { calls[$0].contains("view=running") }.dropFirst().first
+    if let firstTimerStart, let secondRunningCheck, secondRunningCheck > firstTimerStart {
+        ok("a second start waits for the first to finish")
+    } else {
+        bad("two starts ran together: \(calls)")
+    }
+}
+
+/// Every action a no-op: these scenarios assert what the menu *shows*, never what clicking does.
+@MainActor
+let inertActions = MenuActions(
+    logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
+    refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, addTask: { _, _ in }, addClient: {},
+    addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
+    switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
+)
+
+@MainActor
+func recentEntryTitles(_ app: AppState, _ store: FreeAgentDataStore) -> [String] {
+    let menu = MenuBuilder.build(state: app, dataStore: store, actions: inertActions)
+    guard let submenu = menu.item(withTitle: "Recent time entries")?.submenu else { return [] }
+    return submenu.items.map(\.title).filter { !$0.isEmpty }
+}
+
+@MainActor func s13() async throws {
+    hdr(13, "A local write must force the next silent refresh past the 120s staleness gate")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 55, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+    if !store.hasLocalWritesSinceRefresh { ok("a fresh refresh leaves nothing unreconciled") }
+    else { bad("flag set straight after a refresh") }
+
+    stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 55, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    _ = try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    // The gate in StatusItemController.silentlyRefreshIfStale() reads exactly this pair: without
+    // the flag, `lastRefreshedAt` is seconds old and the next menu open skips refreshing.
+    if store.hasLocalWritesSinceRefresh { ok("starting a timer marks the cache unreconciled") }
+    else { bad("a start left the cache looking freshly refreshed") }
+
+    stub.setRule("view=running", body: #"{"timeslips":[\#(slip(id: 55, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))]}"#)
+    try await store.refresh()
+    if !store.hasLocalWritesSinceRefresh { ok("a completed refresh clears it again") }
+    else { bad("refresh did not clear the flag") }
+}
+
+@MainActor func s14() async throws {
+    hdr(14, "Recent time entries must show a just-stopped entry without waiting for a refresh")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    stub.setRule("timeslips/77", body: #"{"timeslip":\#(slip(id: 77, task: 1, hours: "1.5", datedOn: today(), timerStart: nil))}"#)
+    stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 77, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    let app = AppState(); app.logIn()
+    try await store.refresh()
+    app.reconcile(with: store)
+
+    stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 77, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    let started = try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    app.startTracking(acmeRef, startedAt: started.timerStartedAt ?? Date())
+    stub.setRule("view=running", body: #"{"timeslips":[\#(slip(id: 77, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))]}"#)
+
+    _ = try await store.stopTimer()
+    app.stopTracking()
+    // Deliberately no refresh() between the stop and the menu build — that is the whole point.
+    let titles = recentEntryTitles(app, store)
+    print("   recent rows after stopping: \(titles)")
+    if titles.contains(where: { $0.contains("Task1") && $0.contains("1:30") }) {
+        ok("the stopped entry is listed, with the hours the server settled on")
+    } else {
+        bad("no row for the entry just stopped")
+    }
+}
+
+/// In-memory `MostRecentTaskStore`, standing in for the real `UserDefaults`-backed one so these
+/// scenarios never touch the user's actual preferences.
+@MainActor
+final class FakeMostRecentStore: MostRecentTaskStore {
+    var stored: TrackedTaskRef?
+    init(_ stored: TrackedTaskRef?) { self.stored = stored }
+    nonisolated func load() -> TrackedTaskRef? { MainActor.assumeIsolated { stored } }
+    nonisolated func save(_ ref: TrackedTaskRef?) { MainActor.assumeIsolated { stored = ref } }
+}
+
+@MainActor func s15() async throws {
+    hdr(15, "A remembered task must be re-checked against the tree each refresh")
+    let stub = Stub()
+    let recent = slip(id: 300, task: 2, hours: "1.0", datedOn: "2026-08-18", timerStart: nil)
+    baseRules(stub, running: nil, recent: "[\(recent)]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+
+    // Re-stamping is only observable against a store whose history offers nothing: on every other
+    // path the newest history entry replaces the remembered ref outright (scenario 16).
+    let quiet = Stub()
+    baseRules(quiet, running: nil, recent: "[]")
+    let (quietStore, ts3) = makeStore(quiet); defer { ts3.clear() }
+    try await quietStore.refresh()
+
+    // Remembered from a previous launch, under the name the task had back then.
+    let stale = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme Ltd (old)",
+                               projectId: "\(U)/projects/1", projectName: "Site",
+                               taskId: "\(U)/tasks/1", taskName: "Task1 (old name)")
+    let renamedStore = FakeMostRecentStore(stale)
+    let renamed = AppState(mostRecentStore: renamedStore); renamed.logIn()
+    renamed.reconcile(with: quietStore)
+    if renamed.mostRecent?.taskName == "Task1", renamed.mostRecent?.clientName == "Acme" {
+        ok("a renamed task is re-stamped with its current names")
+    } else {
+        bad("still offering stale names: \(renamed.mostRecent.map { "\($0.clientName)/\($0.taskName)" } ?? "nil")")
+    }
+    if renamedStore.stored?.taskName == "Task1" { ok("and the corrected ref was written back to disk") }
+    else { bad("disk still holds the stale ref") }
+
+    // Remembered task since deleted in FreeAgent: it must be dropped, not offered.
+    let gone = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
+                              projectId: "\(U)/projects/1", projectName: "Site",
+                              taskId: "\(U)/tasks/99", taskName: "Deleted task")
+    let deletedStore = FakeMostRecentStore(gone)
+    let deleted = AppState(mostRecentStore: deletedStore); deleted.logIn()
+    deleted.reconcile(with: store)
+    if deleted.mostRecent?.taskId == "\(U)/tasks/2" {
+        ok("a deleted task is dropped and replaced from history")
+    } else {
+        bad("offered \(deleted.mostRecent?.taskName ?? "nil") for a task that no longer exists")
+    }
+    if deletedStore.stored?.taskId == "\(U)/tasks/2" { ok("and disk holds the replacement, not the dead ref") }
+    else { bad("disk holds \(deletedStore.stored?.taskName ?? "nil") after the dead ref was dropped") }
+
+    // An empty tree (before the first refresh lands, or after a failed one) must not be read as
+    // "everything was deleted" — that would wipe the remembered task on every cold launch.
+    let coldStore = FakeMostRecentStore(stale)
+    let cold = AppState(mostRecentStore: coldStore); cold.logIn()
+    let (emptyStore, ts2) = makeStore(Stub()); defer { ts2.clear() }
+    cold.reconcile(with: emptyStore)
+    if cold.mostRecent != nil { ok("an unrefreshed store leaves the remembered task alone") }
+    else { bad("a cold launch wiped the remembered task") }
+}
+
+@MainActor func s16() async throws {
+    hdr(16, "A derived suggestion must follow history when the work moves on elsewhere")
+    let stub = Stub()
+    let taskA = slip(id: 800, task: 1, hours: "2.0", datedOn: "2026-08-18", timerStart: nil)
+    baseRules(stub, running: nil, recent: "[\(taskA)]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    let disk = FakeMostRecentStore(nil)
+    let app = AppState(mostRecentStore: disk); app.logIn()
+    try await store.refresh()
+    app.reconcile(with: store)
+    print("   after launch: \(app.mostRecent?.taskName ?? "nil")")
+    guard app.mostRecent?.taskId == "\(U)/tasks/1" else {
+        bad("launch derived \(app.mostRecent?.taskName ?? "nil") instead of Task1"); return
+    }
+    ok("launch derives Task1 from history")
+    if disk.stored?.taskId == "\(U)/tasks/1" { ok("and persists it, so a cold launch has an answer before its refresh lands") }
+    else { bad("a derived suggestion never reached disk") }
+
+    // The afternoon's work happens in the FreeAgent web app and this app only ever refreshes,
+    // so the offer has to follow history on every refresh, not just seed from it once.
+    let taskB = slip(id: 801, task: 2, hours: "3.0", datedOn: "2026-08-19", timerStart: nil)
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(taskA),\#(taskB)]}"#)
+    try await store.refresh()
+    app.reconcile(with: store)
+    print("   after a silent refresh that sees Task2: \(app.mostRecent?.taskName ?? "nil")")
+    if app.mostRecent?.taskId == "\(U)/tasks/2" { ok("the offer follows history to Task2 within the session") }
+    else { bad("still offering \(app.mostRecent?.taskName ?? "nil") after history moved on to Task2") }
+    if disk.stored?.taskId == "\(U)/tasks/2" { ok("and disk followed it, so memory and disk agree") }
+    else { bad("disk still holds \(disk.stored?.taskName ?? "nil")") }
+
+    // A refresh still in flight when the user logs out lands afterwards. Its history belongs to
+    // the account that just left, so it must not go back on disk.
+    app.logOut()
+    app.reconcile(with: store)
+    if app.mostRecent == nil, disk.stored == nil { ok("a refresh landing after log out restores nothing") }
+    else { bad("log out undone: memory=\(app.mostRecent?.taskName ?? "nil") disk=\(disk.stored?.taskName ?? "nil")") }
+    // Likewise a start still in flight when the user logs out.
+    app.startTracking(acmeRef)
+    if app.trackingTask == nil, disk.stored == nil { ok("and neither does a start completing after it") }
+    else { bad("a late start tracked \(app.trackingTask?.taskName ?? "nothing"), disk=\(disk.stored?.taskName ?? "nil")") }
+
+    // An expired session is not a deliberate log out: the same account usually signs straight
+    // back in, and should find its task still offered.
+    let expiredDisk = FakeMostRecentStore(nil)
+    let expired = AppState(mostRecentStore: expiredDisk); expired.logIn()
+    expired.reconcile(with: store)
+    expired.logOut(forgettingMostRecent: false)
+    if expiredDisk.stored?.taskId == "\(U)/tasks/2", expired.mostRecent?.taskId == "\(U)/tasks/2" {
+        ok("an expired session keeps the task for the next sign-in")
+    } else {
+        bad("an expired session lost the task: memory=\(expired.mostRecent?.taskName ?? "nil") disk=\(expiredDisk.stored?.taskName ?? "nil")")
+    }
+}
+
+@MainActor func s17() async throws {
+    hdr(17, "History must not out-rank the task whose timer is running")
+    let stub = Stub()
+    // FreeAgent doesn't reliably bump `updated_at` when it resumes an existing timeslip's timer,
+    // so the entry that is running right now can sort behind an earlier one from the same day.
+    let running = slip(id: 900, task: 2, hours: "0.0", datedOn: today(), timerStart: "2026-08-27T09:00:00Z")
+    let earlier = slip(id: 901, task: 1, hours: "1.0", datedOn: today(), timerStart: nil,
+                       updatedAt: "2026-08-27T11:00:00Z")
+    baseRules(stub, running: running, recent: "[\(running),\(earlier)]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    let disk = FakeMostRecentStore(nil)
+    let app = AppState(mostRecentStore: disk); app.logIn()
+    try await store.refresh()
+    app.reconcile(with: store)
+    print("   newest resolvable history entry is Task1; the running timer is on Task2")
+    if app.trackingTask?.taskId == "\(U)/tasks/2" { ok("tracking the running task") }
+    else { bad("tracking \(app.trackingTask?.taskName ?? "nothing"), not the running Task2") }
+    if app.mostRecent?.taskId == "\(U)/tasks/2" { ok("and Task2 stays most-recent despite Task1 sorting first") }
+    else { bad("history overrode the running task: most-recent is \(app.mostRecent?.taskName ?? "nil")") }
+    // The ~2-minute silent refresh is where the override would actually land.
+    try await store.refresh()
+    app.reconcile(with: store)
+    if app.mostRecent?.taskId == "\(U)/tasks/2" { ok("and still does after a later refresh") }
+    else { bad("a later refresh overrode it: \(app.mostRecent?.taskName ?? "nil")") }
+
+    // The guard is narrow on purpose: with nothing running, history is authoritative again.
+    stub.setRule("view=running", body: #"{"timeslips":[]}"#)
+    try await store.refresh()
+    app.reconcile(with: store)
+    if app.trackingTask == nil, app.mostRecent?.taskId == "\(U)/tasks/1" {
+        ok("once the timer stops, history takes over again")
+    } else {
+        bad("after the stop: tracking=\(app.trackingTask?.taskName ?? "nil") most-recent=\(app.mostRecent?.taskName ?? "nil")")
+    }
+}
+
+@MainActor func s18() async throws {
+    hdr(18, "A remembered task must be forgotten once its project or client leaves the tree")
+    let stub = Stub()
+    // No history at all, so nothing can replace the remembered ref and whatever happens to it is
+    // the only thing on show.
+    baseRules(stub, running: nil, recent: "[]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+
+    // A refresh commits all or nothing, so projects/9 missing from it is a project FreeAgent no
+    // longer lists, not a fetch that came back short.
+    let remembered = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
+                                    projectId: "\(U)/projects/9", projectName: "Site B",
+                                    taskId: "\(U)/tasks/3", taskName: "Task3")
+    let disk = FakeMostRecentStore(remembered)
+    let app = AppState(mostRecentStore: disk); app.logIn()
+    app.reconcile(with: store)
+    print("   project missing -> memory=\(app.mostRecent?.taskName ?? "nil") disk=\(disk.stored?.taskName ?? "nil")")
+    if case .idleNoHistory = app.screen { ok("a task whose project left the tree is no longer offered") }
+    else { bad("still offering \(app.mostRecent?.taskName ?? "nil")") }
+    if disk.stored == nil { ok("and it was cleared from disk") }
+    else { bad("left on disk: \(disk.stored!.taskName)") }
+
+    // One level up: a client missing entirely, as for a hidden contact, or a task remembered from
+    // another account.
+    let otherClient = TrackedTaskRef(clientId: "\(U)/contacts/9", clientName: "Beta",
+                                     projectId: "\(U)/projects/9", projectName: "Site B",
+                                     taskId: "\(U)/tasks/3", taskName: "Task3")
+    let otherDisk = FakeMostRecentStore(otherClient)
+    let other = AppState(mostRecentStore: otherDisk); other.logIn()
+    other.reconcile(with: store)
+    if other.mostRecent == nil, otherDisk.stored == nil { ok("a missing client is read the same way") }
+    else { bad("a missing client kept the ref: memory=\(other.mostRecent?.taskName ?? "nil") disk=\(otherDisk.stored?.taskName ?? "nil")") }
+}
+
+@MainActor func s19() async throws {
+    hdr(19, "A task genuinely absent from a fetched project must still be forgotten")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+
+    // projects/1 *is* in the tree and lists tasks 1 and 2, so its task list really was fetched:
+    // tasks/99 is gone, not merely unseen.
+    let dead = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
+                              projectId: "\(U)/projects/1", projectName: "Site",
+                              taskId: "\(U)/tasks/99", taskName: "Deleted task")
+    let disk = FakeMostRecentStore(dead)
+    let app = AppState(mostRecentStore: disk); app.logIn()
+    app.reconcile(with: store)
+    print("   screen: \(app.screen)")
+    if case .idleNoHistory = app.screen { ok("no `Start tracking …` row for a task that would fail server-side") }
+    else { bad("still offering \(app.mostRecent?.taskName ?? "nil")") }
+    if disk.stored == nil { ok("and the dead ref was cleared from disk") }
+    else { bad("dead ref left on disk: \(disk.stored!.taskName)") }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -378,6 +780,15 @@ Task { @MainActor in
         if want(8) { try await s8() }
         if want(9) { try await s9() }
         if want(10) { try await s10() }
+        if want(11) { try await s11() }
+        if want(12) { try await s12() }
+        if want(13) { try await s13() }
+        if want(14) { try await s14() }
+        if want(15) { try await s15() }
+        if want(16) { try await s16() }
+        if want(17) { try await s17() }
+        if want(18) { try await s18() }
+        if want(19) { try await s19() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)

@@ -38,12 +38,10 @@ Two things partly close the gap, and both are worth running before claiming a ch
   swift run Antagonise
   ```
 
-  Ten scenarios drive the real `FreeAgentDataStore` against a stub transport and assert the
-  fixed behaviour for every local/remote divergence fixed in `cbcb28f..HEAD` — a stale cache
-  stopping the wrong timer, a refresh clobbering a just-started one, a re-dated edit unsorting
-  the timeslip list, and so on. It exits non-zero on any regression. Run it after touching
-  `FreeAgentDataStore`, `AppState`, or `restoreRunningTimer`; see
-  `Sources/Antagonise/main.swift` for what each scenario covers.
+  Nineteen scenarios drive the real `FreeAgentDataStore` against a stub transport and assert the
+  fixed behaviour for every local/remote divergence and staleness bug fixed in `cbcb28f..HEAD`.
+  It exits non-zero on any regression. Run it after touching `FreeAgentDataStore`, `AppState`, or
+  `AppState.reconcile(with:)`; see `Sources/Antagonise/main.swift` for what each scenario covers.
 
 Installing Xcode and running `xcode-select -s /Applications/Xcode.app` restores `swift test`.
 

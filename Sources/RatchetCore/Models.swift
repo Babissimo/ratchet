@@ -186,10 +186,14 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
     /// Whether FreeAgent has already billed this entry on an invoice. An invoiced entry is
     /// closed on FreeAgent's side — "Recent time entries" shows it but can't offer to edit it.
     public let isInvoiced: Bool
+    /// FreeAgent's `updated_at`, or nil for an entry from a response that omitted it. Only a
+    /// tie-breaker within one `day`; see `MostRecentTask.resolve`.
+    public let updatedAt: Date?
 
     public init(
         id: String, clientId: String, projectId: String, taskId: String, day: Date,
-        timerStartedAt: Date? = nil, hours: Double, comment: String? = nil, isInvoiced: Bool = false
+        timerStartedAt: Date? = nil, hours: Double, comment: String? = nil, isInvoiced: Bool = false,
+        updatedAt: Date? = nil
     ) {
         self.id = id
         self.clientId = clientId
@@ -200,6 +204,7 @@ public struct RatchetTimeslip: Identifiable, Equatable, Codable {
         self.hours = hours
         self.comment = comment
         self.isInvoiced = isInvoiced
+        self.updatedAt = updatedAt
     }
 
     /// A copy with a different client id. See `RatchetProject.withTasks(_:)` for why this copies
