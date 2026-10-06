@@ -212,8 +212,14 @@ public final class FreeAgentAPIClient {
         return try await task.value
     }
 
-    private func authenticatedRequest(path: String, method: String, query: [URLQueryItem], body: Data?, isRetry: Bool = false) async throws -> Data {
-        var tokens: FreeAgentTokens
+    /// Refreshes an expired access token now rather than as part of the next request, so that
+    /// refresh failing can't be mistaken for the request failing in flight.
+    public func prepareTokens() async throws {
+        _ = try await freshTokens()
+    }
+
+    private func freshTokens() async throws -> FreeAgentTokens {
+        let tokens: FreeAgentTokens
         switch tokenStore.loadResult() {
         case .found(let stored):
             tokens = stored
@@ -225,9 +231,12 @@ public final class FreeAgentAPIClient {
             // very credentials this request was trying to use.
             throw FreeAgentError.credentialStoreUnavailable(status)
         }
-        if tokens.isExpired {
-            tokens = try await refreshTokensShared(currentRefreshToken: tokens.refreshToken)
-        }
+        guard tokens.isExpired else { return tokens }
+        return try await refreshTokensShared(currentRefreshToken: tokens.refreshToken)
+    }
+
+    private func authenticatedRequest(path: String, method: String, query: [URLQueryItem], body: Data?, isRetry: Bool = false) async throws -> Data {
+        let tokens = try await freshTokens()
 
         // Thrown rather than force-unwrapped: `path` is frequently a resource URL taken verbatim
         // from a FreeAgent response body (see FreeAgentDTOs), so a single malformed value in an

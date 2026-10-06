@@ -2,6 +2,27 @@
 import Foundation
 import RatchetCore
 
+/// A timeslip as `POST /timeslips` and `PUT /timeslips/:id` take it. `Hashable` so a create
+/// whose outcome is unknown can be matched to an identical retry.
+private struct TimeslipBody: Encodable, Hashable {
+    let project: String
+    let task: String
+    let user: String
+    let dated_on: String
+    let hours: String
+    let comment: String?
+
+    /// Whether `dto` records this entry. Hours compare numerically to within half a minute,
+    /// since FreeAgent echoes the decimal it stored rather than the string sent, and comments
+    /// compare as the log form normalises them, since an absent one may come back as null or "".
+    func isRecorded(by dto: FreeAgentTimeslipDTO) -> Bool {
+        guard dto.user == user, dto.project == project, dto.task == task, dto.datedOn == dated_on,
+              let sent = Double(hours), let stored = Double(dto.hours), abs(sent - stored) < 1.0 / 120
+        else { return false }
+        return TaskNameValidator.validate(dto.comment ?? "") == TaskNameValidator.validate(comment ?? "")
+    }
+}
+
 @MainActor
 public final class FreeAgentDataStore: DataStore {
     public private(set) var clients: [RatchetClient] = []
@@ -256,30 +277,15 @@ public final class FreeAgentDataStore: DataStore {
             }
 
             let today = todayString()
-            let existing: [FreeAgentTimeslipDTO] = try await apiClient.getList(
-                "timeslips", query: [
-                    URLQueryItem(name: "task", value: taskId),
-                    URLQueryItem(name: "project", value: projectId),
-                    URLQueryItem(name: "from_date", value: today),
-                    URLQueryItem(name: "to_date", value: today),
-                    URLQueryItem(name: "user", value: userURL),
-                ], listKey: "timeslips"
-            )
+            let existing = try await sameDayTimeslips(task: taskId, project: projectId, day: today, user: userURL)
 
             let timeslipURL: String
             if let found = existing.first {
                 timeslipURL = found.url
             } else {
-                struct CreateTimeslipBody: Encodable {
-                    let project: String
-                    let task: String
-                    let user: String
-                    let dated_on: String
-                    let hours: String
-                }
                 let created: FreeAgentTimeslipDTO = try await apiClient.post(
                     "timeslips", envelopeKey: "timeslip",
-                    body: CreateTimeslipBody(project: projectId, task: taskId, user: userURL, dated_on: today, hours: "0.0")
+                    body: TimeslipBody(project: projectId, task: taskId, user: userURL, dated_on: today, hours: "0.0", comment: nil)
                 )
                 timeslipURL = created.url
             }
@@ -481,25 +487,17 @@ public final class FreeAgentDataStore: DataStore {
     ) async throws -> RatchetTimeslip {
         try await withMutation {
             let userURL = try requireUserURL()
-            struct CreateTimeslipBody: Encodable {
-                let project: String
-                let task: String
-                let user: String
-                let dated_on: String
-                let hours: String
-                let comment: String?
-            }
-            let created: FreeAgentTimeslipDTO = try await apiClient.post(
-                "timeslips", envelopeKey: "timeslip",
-                body: CreateTimeslipBody(
-                    project: projectId, task: taskId, user: userURL,
-                    dated_on: dateString(date), hours: String(hours), comment: comment
-                )
-            )
+            let (created, isEarlierAttempt) = try await createTimeslip(TimeslipBody(
+                project: projectId, task: taskId, user: userURL,
+                dated_on: dateString(date), hours: String(hours), comment: comment
+            ))
             let resolved = resolvedTimeslip(created, clientId: clientId)
             // id-keyed upsert, not a bare append — see `mutationEpoch`'s doc comment for the
             // narrow window in which a concurrent refresh can commit this same entry first.
             upsertKeepingDayOrder(resolved)
+            // Thrown rather than returned: this request may be a deliberate second entry rather
+            // than a retry, and only the user can say which.
+            if isEarlierAttempt { throw DataStoreError.alreadyLogged }
             return resolved
         }
     }
@@ -509,19 +507,11 @@ public final class FreeAgentDataStore: DataStore {
     ) async throws -> RatchetTimeslip {
         try await withMutation {
             let userURL = try requireUserURL()
-            // Same body shape as `logTime`'s create — FreeAgent's timeslip PUT takes the full
-            // record, not a partial patch, so reassigning the task means resending project/task too.
-            struct UpdateTimeslipBody: Encodable {
-                let project: String
-                let task: String
-                let user: String
-                let dated_on: String
-                let hours: String
-                let comment: String?
-            }
+            // FreeAgent's timeslip PUT takes the full record, not a partial patch, so reassigning
+            // the task means resending project/task too.
             let updated: FreeAgentTimeslipDTO = try await apiClient.put(
                 id, envelopeKey: "timeslip",
-                body: UpdateTimeslipBody(
+                body: TimeslipBody(
                     project: projectId, task: taskId, user: userURL,
                     dated_on: dateString(date), hours: String(hours), comment: comment
                 )
@@ -558,6 +548,129 @@ public final class FreeAgentDataStore: DataStore {
             }
             return reconciled
         }
+    }
+
+    // MARK: - Creates whose outcome is unknown
+
+    /// Allows for the Mac's clock running ahead of FreeAgent's, and for `created_at` being whole
+    /// seconds, when a request's send time is compared with the `created_at` of its result.
+    private static let clockSkewAllowance: TimeInterval = 5 * 60
+
+    /// A `POST /timeslips` that may have reached FreeAgent although no response reached Ratchet.
+    private struct UncertainCreate {
+        let sentAt: Date
+        /// Entries already cached when it was sent, none of which can be its result.
+        let knownIds: Set<String>
+    }
+
+    /// Keyed by request body, so an identical retry finds the create it may be repeating.
+    private var uncertainCreates: [TimeslipBody: UncertainCreate] = [:]
+
+    /// Every timeslip `logTime` has created or adopted, none of which can be the result of another
+    /// create, including one still in flight. `UncertainCreate.knownIds` can't cover these: the
+    /// cache holds only `refresh()`'s window, which a back-dated entry leaves at the next refresh.
+    private var ownTimeslipIds: Set<String> = []
+
+    /// The last create queued for each body. Identical creates run one at a time, so each is
+    /// settled before the next is posted: run together, one can adopt the other's entry before
+    /// that create's response arrives, or post while the other's outcome is still open.
+    private var queuedCreates: [TimeslipBody: Task<CreateResult, Error>] = [:]
+
+    private typealias CreateResult = (dto: FreeAgentTimeslipDTO, isEarlierAttempt: Bool)
+
+    /// `POST /timeslips`, safe to retry. FreeAgent has no idempotency key, so a create whose
+    /// outcome is unknown is remembered and settled by looking for the entry it would have made:
+    /// straight away, and again before an identical create is posted. `isEarlierAttempt` is true
+    /// when that second look finds it, so nothing was posted this time.
+    private func createTimeslip(_ body: TimeslipBody) async throws -> CreateResult {
+        let previous = queuedCreates[body]
+        let create = Task { [self] in
+            _ = try? await previous?.value
+            return try await performCreateTimeslip(body)
+        }
+        queuedCreates[body] = create
+        defer { if queuedCreates[body] == create { queuedCreates[body] = nil } }
+        return try await create.value
+    }
+
+    private func performCreateTimeslip(_ body: TimeslipBody) async throws -> CreateResult {
+        if let earlier = uncertainCreates[body], let found = try await findCreated(body, by: earlier) {
+            settle(body, as: found)
+            return (found, true)
+        }
+        // Outside the POST, so an expired token failing to refresh reads as nothing sent.
+        try await apiClient.prepareTokens()
+        let sentAt = clock()
+        let cachedAtSend = timeslips
+        do {
+            let created: FreeAgentTimeslipDTO = try await apiClient.post("timeslips", envelopeKey: "timeslip", body: body)
+            settle(body, as: created)
+            return (created, false)
+        } catch where Self.mayHaveBeenApplied(error) {
+            // Kept, and reported as unconfirmed, even when the look below finds nothing: a
+            // request that timed out can still commit after the look has run. An earlier record
+            // for the same entry is kept in preference, since its window covers both attempts.
+            let record = uncertainCreates[body] ?? UncertainCreate(sentAt: sentAt, knownIds: Set(cachedAtSend.map(\.id)))
+            uncertainCreates[body] = record
+            // Not the original error: a plain network error reads as "not logged" and invites a
+            // blind retry.
+            guard let found = try await findCreated(body, by: record) else { throw DataStoreError.unconfirmed }
+            settle(body, as: found)
+            return (found, false)
+        }
+    }
+
+    private func settle(_ body: TimeslipBody, as result: FreeAgentTimeslipDTO) {
+        uncertainCreates[body] = nil
+        ownTimeslipIds.insert(result.url)
+    }
+
+    /// Whether a create that threw may still have been applied. A 4xx is FreeAgent refusing it;
+    /// no response at all, a 5xx (a gateway gives up on requests the app may yet complete), or a
+    /// success whose body didn't decode leaves the outcome open.
+    private static func mayHaveBeenApplied(_ error: Error) -> Bool {
+        switch error as? FreeAgentError {
+        case .network(let underlying)?:
+            // Name resolution and connecting both fail before any of the request is sent.
+            // `.notConnectedToInternet` describes the interface rather than this request, so it
+            // can't vouch that nothing went out.
+            let unsent: Set<URLError.Code> = [.cannotFindHost, .dnsLookupFailed, .cannotConnectToHost]
+            return (underlying as? URLError).map { !unsent.contains($0.code) } ?? true
+        case .decoding?: return true
+        case .apiError(let status, _)?: return status >= 500
+        default: return false
+        }
+    }
+
+    /// The entry `attempt` created, if FreeAgent applied it.
+    private func findCreated(_ body: TimeslipBody, by attempt: UncertainCreate) async throws -> FreeAgentTimeslipDTO? {
+        let sameDay: [FreeAgentTimeslipDTO]
+        do {
+            sameDay = try await sameDayTimeslips(task: body.task, project: body.project, day: body.dated_on, user: body.user)
+        } catch where !error.indicatesSessionExpired {
+            throw DataStoreError.unconfirmed
+        }
+        let earliest = attempt.sentAt.addingTimeInterval(-Self.clockSkewAllowance)
+        let candidates = sameDay.compactMap { dto -> (dto: FreeAgentTimeslipDTO, createdAt: Date)? in
+            guard let createdAt = dto.createdAt, createdAt >= earliest, !attempt.knownIds.contains(dto.url),
+                  !ownTimeslipIds.contains(dto.url), body.isRecorded(by: dto) else { return nil }
+            return (dto, createdAt)
+        }
+        // The earliest is the likeliest to be this request's own.
+        return candidates.min { $0.createdAt < $1.createdAt }?.dto
+    }
+
+    /// `user`'s timeslips for one task on one `yyyy-MM-dd` day.
+    private func sameDayTimeslips(task: String, project: String, day: String, user: String) async throws -> [FreeAgentTimeslipDTO] {
+        try await apiClient.getList(
+            "timeslips", query: [
+                URLQueryItem(name: "task", value: task),
+                URLQueryItem(name: "project", value: project),
+                URLQueryItem(name: "from_date", value: day),
+                URLQueryItem(name: "to_date", value: day),
+                URLQueryItem(name: "user", value: user),
+            ], listKey: "timeslips"
+        )
     }
 
     // MARK: - Private helpers

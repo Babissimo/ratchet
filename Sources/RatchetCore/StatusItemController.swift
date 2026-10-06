@@ -979,6 +979,10 @@ public final class StatusItemController {
         }
 
         Task { @MainActor in
+            let taskName = self.dataStore.clients.first(where: { $0.id == clientId })?
+                .projects.first(where: { $0.id == projectId })?
+                .tasks.first(where: { $0.id == taskId })?
+                .name ?? "the task"
             do {
                 _ = try await self.dataStore.logTime(
                     taskId: taskId,
@@ -989,12 +993,10 @@ public final class StatusItemController {
                     comment: TaskNameValidator.validate(commentField.stringValue)
                 )
                 self.rebuild()
-
-                let taskName = self.dataStore.clients.first(where: { $0.id == clientId })?
-                    .projects.first(where: { $0.id == projectId })?
-                    .tasks.first(where: { $0.id == taskId })?
-                    .name ?? "the task"
                 self.presentLoggedConfirmation(taskName: taskName, hours: hours, date: datePicker.dateValue)
+            } catch let caveat as DataStoreError where caveat.qualifiesLoggedEntry {
+                self.rebuild()
+                self.presentLoggedConfirmation(taskName: taskName, hours: hours, date: datePicker.dateValue, caveat: caveat)
             } catch {
                 self.presentAPIError(error, action: "log time")
             }
@@ -1061,8 +1063,9 @@ public final class StatusItemController {
         }
 
         Task { @MainActor in
+            let newTask: RatchetTask
             do {
-                let newTask = try await self.dataStore.addTask(
+                newTask = try await self.dataStore.addTask(
                     name: name,
                     projectId: projectId,
                     clientId: clientId,
@@ -1071,6 +1074,15 @@ public final class StatusItemController {
                     billingRate: billingRate,
                     billingPeriod: billingRate == nil ? nil : billingPeriod
                 )
+            } catch {
+                self.presentAPIError(error, action: "create the task")
+                return
+            }
+            self.rebuild()
+            // Re-running this form would create the task again, and the time with it, so the
+            // outcomes below name the task that now exists and a caveat points a retry at it.
+            let createdTask = "the new task \u{201C}\(name)\u{201D}"
+            do {
                 _ = try await self.dataStore.logTime(
                     taskId: newTask.id,
                     projectId: projectId,
@@ -1081,19 +1093,38 @@ public final class StatusItemController {
                 )
                 self.rebuild()
                 self.presentLoggedConfirmation(taskName: name, hours: hours, date: datePicker.dateValue)
+            } catch let caveat as DataStoreError where caveat.qualifiesLoggedEntry {
+                self.rebuild()
+                self.presentLoggedConfirmation(
+                    taskName: createdTask, hours: hours, date: datePicker.dateValue, caveat: caveat,
+                    retryAdvice: "Use \u{201C}\(name)\u{201D} under Log past time for that, since New task would create the task again."
+                )
             } catch {
-                self.presentAPIError(error, action: "create the task and log time")
+                self.presentAPIError(error, action: "log time against \(createdTask)")
             }
         }
     }
 
-    private func presentLoggedConfirmation(taskName: String, hours: Double, date: Date) {
+    /// `caveat` qualifies an entry that wasn't simply logged (see `qualifiesLoggedEntry`).
+    /// Neither is titled as a failure, since a user who reads only the title and logs the time
+    /// some other way makes the very duplicate both exist to prevent. `retryAdvice` follows the
+    /// caveat, for a form that logging the same entry again must not go through.
+    private func presentLoggedConfirmation(
+        taskName: String, hours: Double, date: Date, caveat: DataStoreError? = nil, retryAdvice: String? = nil
+    ) {
         let duration = ElapsedTimeFormatter.format(seconds: hours * 3600)
         let dateText = Self.confirmationDateFormatter.string(from: date)
         let alert = NSAlert()
         alert.icon = Self.formIcon
-        alert.messageText = "Time Logged"
-        alert.informativeText = "\(duration) logged for \(taskName) on \(dateText)."
+        if let caveat {
+            alert.messageText = caveat == .alreadyLogged ? "Already Logged" : "Not Confirmed"
+            alert.informativeText = ["\(duration) for \(taskName) on \(dateText).", "\(caveat)", retryAdvice]
+                .compactMap { $0 }.joined(separator: " ")
+            if caveat == .unconfirmed { alert.alertStyle = .warning }
+        } else {
+            alert.messageText = "Time Logged"
+            alert.informativeText = "\(duration) logged for \(taskName) on \(dateText)."
+        }
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
@@ -1673,4 +1704,9 @@ public final class StatusItemController {
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
+}
+
+private extension DataStoreError {
+    /// The `logTime` outcomes that qualify an entry rather than fail it.
+    var qualifiesLoggedEntry: Bool { self == .alreadyLogged || self == .unconfirmed }
 }

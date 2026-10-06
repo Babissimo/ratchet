@@ -6,9 +6,12 @@ import RatchetCore
 private final class StubTransport: FreeAgentTransport {
     var responsesByPathSubstring: [(match: String, status: Int, body: Data)] = []
     var calls: [URLRequest] = []
+    /// Consulted before the canned responses: a request it returns an error for gets no response.
+    var failure: (URLRequest) -> Error? = { _ in nil }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         calls.append(request)
+        if let error = failure(request) { throw error }
         let path = request.url!.absoluteString
         guard let entry = responsesByPathSubstring.first(where: { path.contains($0.match) }) else {
             fatalError("No stubbed response matches \(path)")
@@ -724,5 +727,148 @@ final class FreeAgentDataStoreTests: XCTestCase {
         } catch let error as DataStoreError {
             XCTAssertEqual(error, DataStoreError.underlying("Ratchet hasn't loaded your FreeAgent account yet — choose Refresh and try again."))
         }
+    }
+
+    // MARK: - Creates whose response is lost
+
+    private static let createdSlipURL = "https://api.sandbox.freeagent.com/v2/timeslips/77"
+
+    /// Today's 1:20 on task 1, its hours to two places rather than the 1.3333333333333333 sent.
+    private static func createdSlip(createdAt: Date) -> String {
+        let today = CalendarDay.dayString(from: Date())
+        let stamp = ISO8601DateFormatter().string(from: createdAt)
+        return #"{"url":"\#(createdSlipURL)","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"1.33","comment":null,"timer":null,"billed_on_invoice":null,"created_at":"\#(stamp)","updated_at":"\#(stamp)"}"#
+    }
+
+    /// Priming refresh rules, plus `lookup` as the answer to the same-day query a lost create is
+    /// settled by, and `create` as the answer to the create itself.
+    private static func logTimeRules(lookup: String, create: (status: Int, body: String) = (201, "{}")) -> [(match: String, status: Int, body: Data)] {
+        [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            // Before "timeslips?", which the same-day query's URL also contains.
+            (match: "task=", status: 200, body: Data(#"{"timeslips":[\#(lookup)]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "v2/timeslips", status: create.status, body: Data(create.body.utf8)),
+        ]
+    }
+
+    private func logAnHourAndTwenty(_ store: FreeAgentDataStore) async throws -> RatchetTimeslip {
+        try await store.logTime(
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1",
+            date: Date(), hours: 4.0 / 3.0, comment: nil
+        )
+    }
+
+    nonisolated private static func isCreate(_ request: URLRequest) -> Bool {
+        request.httpMethod == "POST" && request.url!.path.hasSuffix("/v2/timeslips")
+    }
+
+    func test_logTime_adoptsTheEntryWhenTheCreateResponseIsLost() async throws {
+        // FreeAgent applied the POST but the response never arrived, so the entry exists with no
+        // local record; reporting the transport error would invite a retry that logs it twice.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = Self.logTimeRules(lookup: Self.createdSlip(createdAt: Date()))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        transport.failure = { Self.isCreate($0) ? URLError(.networkConnectionLost) : nil }
+        transport.calls = []
+
+        let logged = try await logAnHourAndTwenty(store)
+
+        XCTAssertEqual(logged.id, Self.createdSlipURL)
+        XCTAssertEqual(logged.clientId, "https://api.sandbox.freeagent.com/v2/contacts/1")
+        XCTAssertEqual(store.timeslips.map(\.id), [Self.createdSlipURL])
+        XCTAssertEqual(transport.calls.filter(Self.isCreate).count, 1)
+    }
+
+    func test_logTime_whenTheLostCreateCannotBeChecked_saysItMayExistAndChecksBeforePostingAgain() async throws {
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = Self.logTimeRules(lookup: Self.createdSlip(createdAt: Date()))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        transport.failure = { _ in URLError(.notConnectedToInternet) }
+
+        do {
+            _ = try await logAnHourAndTwenty(store)
+            XCTFail("expected an error while offline")
+        } catch let error as DataStoreError {
+            XCTAssertEqual(error, .unconfirmed, "a plain network error invites a blind retry")
+        }
+        XCTAssertTrue(store.timeslips.isEmpty)
+
+        transport.failure = { _ in nil }
+        transport.calls = []
+        do {
+            _ = try await logAnHourAndTwenty(store)
+            XCTFail("the earlier attempt's entry was reported as newly logged")
+        } catch DataStoreError.alreadyLogged {}
+
+        XCTAssertEqual(store.timeslips.map(\.id), [Self.createdSlipURL])
+        XCTAssertFalse(transport.calls.contains(where: Self.isCreate), "the retry must adopt the entry, not post it again")
+    }
+
+    func test_logTime_doesNotLookForTheEntryWhenTheRequestNeverLeft() async throws {
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = Self.logTimeRules(lookup: Self.createdSlip(createdAt: Date()))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        transport.failure = { Self.isCreate($0) ? URLError(.cannotConnectToHost) : nil }
+        transport.calls = []
+
+        do {
+            _ = try await logAnHourAndTwenty(store)
+            XCTFail("expected the connection failure to surface")
+        } catch let error as FreeAgentError {
+            guard case .network = error else { return XCTFail("expected the network error, got \(error)") }
+        }
+        XCTAssertEqual(transport.calls.count, 1, "an identical entry made elsewhere must not be adopted for a request never sent")
+    }
+
+    func test_logTime_doesNotAdoptAnIdenticalEntryCreatedBeforeTheRequestWasSent() async throws {
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = Self.logTimeRules(lookup: Self.createdSlip(createdAt: Date(timeIntervalSinceNow: -3600)))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        transport.failure = { Self.isCreate($0) ? URLError(.notConnectedToInternet) : nil }
+
+        do {
+            _ = try await logAnHourAndTwenty(store)
+            XCTFail("an hour-old entry was adopted as this request's result")
+        } catch let error as DataStoreError {
+            XCTAssertEqual(error, .unconfirmed, "the outcome is still unknown")
+        }
+        XCTAssertTrue(store.timeslips.isEmpty)
+    }
+
+    func test_logTime_doesNotLookForTheEntryAfterAnHTTPRefusal() async throws {
+        // A 4xx is FreeAgent answering that it created nothing.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = Self.logTimeRules(
+            lookup: Self.createdSlip(createdAt: Date()),
+            create: (422, #"{"errors":{"error":{"message":"Hours is invalid"}}}"#)
+        )
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        transport.calls = []
+
+        do {
+            _ = try await logAnHourAndTwenty(store)
+            XCTFail("expected the 422 to surface")
+        } catch let error as FreeAgentError {
+            XCTAssertEqual(error.description, "Hours is invalid")
+        }
+        XCTAssertEqual(transport.calls.count, 1, "nothing but the refused POST")
     }
 }
