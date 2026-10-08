@@ -84,6 +84,70 @@ final class StatusItemControllerTests: XCTestCase {
         )
     }
 
+    /// Nothing rebuilds the menu at midnight, and the first open after it can't (an open menu is
+    /// never rebuilt), so the elapsed row's per-second tick has to bring in the booked-day note.
+    func test_elapsedRow_notesTheBookedDayOncePastMidnight_withoutARebuild() throws {
+        let booked = CalendarDay.day(from: "2026-08-12")!
+        let startedAt = booked.addingTimeInterval(23 * 3600)
+        var now = startedAt.addingTimeInterval(59 * 60)
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        dataStore.seedTimeslips([RatchetTimeslip(
+            id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
+            day: booked, timerStartedAt: startedAt, hours: 0
+        )], runningId: "timeslip-1")
+        let controller = StatusItemController(appState: appState, dataStore: dataStore, now: { now })
+        self.controller = controller
+        appState.logIn()
+        appState.startTracking(TrackedTaskRef(
+            clientId: "client-1", clientName: "Acme",
+            projectId: "proj-1", projectName: "Website Redesign",
+            taskId: "task-1", taskName: "Development"
+        ), startedAt: startedAt)
+        let menu = controller.statusItemForTesting.menu!
+        XCTAssertEqual(menu.items[0].title, "0:59")
+
+        now = startedAt.addingTimeInterval(61 * 60)
+        try XCTUnwrap(controller.elapsedTimerForTesting).fire()
+
+        XCTAssertTrue(controller.statusItemForTesting.menu === menu, "the tick, not a rebuild, updates the row")
+        XCTAssertEqual(menu.items[0].title, "1:01 · booked to yesterday")
+    }
+
+    /// An open menu isn't rebuilt when a refresh lands, so the tick keeps the booked day of the
+    /// timeslip the rest of that menu was built from rather than whatever the store holds now.
+    func test_elapsedRow_keepsTheBookedDayItsMenuWasBuiltFrom() throws {
+        let yesterday = CalendarDay.day(from: "2026-08-12")!
+        let today = CalendarDay.day(from: "2026-08-13")!
+        let startedAt = yesterday.addingTimeInterval(17 * 3600)
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        dataStore.seedTimeslips([RatchetTimeslip(
+            id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
+            day: yesterday, timerStartedAt: startedAt, hours: 0
+        )], runningId: "timeslip-1")
+        let controller = StatusItemController(
+            appState: appState, dataStore: dataStore, now: { today.addingTimeInterval(9 * 3600) }
+        )
+        self.controller = controller
+        appState.logIn()
+        appState.startTracking(TrackedTaskRef(
+            clientId: "client-1", clientName: "Acme",
+            projectId: "proj-1", projectName: "Website Redesign",
+            taskId: "task-1", taskName: "Development"
+        ), startedAt: startedAt)
+        let menu = controller.statusItemForTesting.menu!
+        XCTAssertEqual(menu.items[0].title, "16:00 · booked to yesterday")
+
+        dataStore.seedTimeslips([RatchetTimeslip(
+            id: "timeslip-2", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
+            day: today, timerStartedAt: startedAt, hours: 0
+        )], runningId: "timeslip-2")
+        try XCTUnwrap(controller.elapsedTimerForTesting).fire()
+
+        XCTAssertEqual(menu.items[0].title, "16:00 · booked to yesterday")
+    }
+
     func test_menuWillOpen_refreshesWhenNeverRefreshed() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()

@@ -32,6 +32,41 @@ public enum CalendarDay {
         return formatter.string(from: date)
     }
 
+    /// Whole calendar days from the day `day` falls on to the day `now` falls on, in `zone`: 0 for
+    /// the same day, 1 when `day` is yesterday, negative when `day` is later.
+    static func daysBetween(_ day: Date, and now: Date, in zone: TimeZone = .current) -> Int {
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = zone
+        // Diffed as UTC dates: where the clocks go forward at midnight the local day begins at
+        // 01:00, and its 23 hours to the next midnight would count as no day at all.
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        guard let start = utc.date(from: local.dateComponents([.year, .month, .day], from: day)),
+              let end = utc.date(from: local.dateComponents([.year, .month, .day], from: now))
+        else { return 0 }
+        return utc.dateComponents([.day], from: start, to: end).day ?? 0
+    }
+
+    /// `day` named relative to `now` if it is earlier: "yesterday", its weekday within the past
+    /// week, otherwise `displayString(from:)`. Nil for today or a later day.
+    ///
+    /// The weekday is English, like the menu text it sits in; an older date follows the user's
+    /// own format, as everywhere else the app shows one.
+    static func pastDayDisplayString(from day: Date, now: Date) -> String? {
+        switch daysBetween(day, and: now) {
+        case ...0:
+            return nil
+        case 1:
+            return "yesterday"
+        case 2...6:
+            let formatter = dayFormatter()
+            formatter.dateFormat = "EEEE"
+            return formatter.string(from: day)
+        default:
+            return displayString(from: day)
+        }
+    }
+
     /// Built per call rather than cached in a `static let`.
     ///
     /// A cached formatter captures `TimeZone.current` at first use, so it would keep emitting the
