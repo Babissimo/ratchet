@@ -54,7 +54,13 @@ every token request goes to, Ratchet's sign-in service (`worker/`, a Cloudflare 
 `npm test` in `worker/`; `worker/README.md` covers deploying it.
 
 Builds target FreeAgent production. Build with `-Xswiftc -DFREEAGENT_SANDBOX` (or
-`FREEAGENT_SANDBOX=1 scripts/build-app.sh debug`) to target the sandbox instead.
+`FREEAGENT_SANDBOX=1 scripts/build-app.sh debug`) to target the sandbox instead. Each environment
+keeps its sign-in in its own Keychain item (`com.ratchet.freeagent` for production,
+`com.ratchet.freeagent.sandbox` for the sandbox), so signing in to a sandbox build leaves the
+production session alone. Otherwise both builds are the same app to macOS (`com.ratchet.app`):
+they share a defaults domain, so anything environment-specific stored there needs an
+environment-keyed name (as `mostRecentTask.<environment>` has), and they share the login item and
+the `ratchet://` registration.
 
 ## App bundle
 
