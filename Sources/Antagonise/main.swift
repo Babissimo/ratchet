@@ -8,16 +8,18 @@
 // cover the "Start tracking …" offer itself (following history, yielding to a running timer,
 // and dropping a task, project or client that has gone); 20-23 cover a "Log past time" create
 // whose response is lost, which a retry must not log twice; 24 covers an edit that clears an
-// entry's comment, which FreeAgent must be told about. Each drives the real `FreeAgentDataStore`
-// against a scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a
-// regression. Exits non-zero if any scenario fails.
+// entry's comment, which FreeAgent must be told about; 25 and 26 cover the timer's start (a start
+// FreeAgent reports as not running, and an edit whose reply carries no timer); 27 covers a refresh
+// that begins while a start is in flight, which only the mutation epoch's exit edge catches. Each
+// drives the real `FreeAgentDataStore` against a scriptable stub transport and asserts the *fixed*
+// behaviour, so a `BUG` line means a regression. Exits non-zero if any scenario fails.
 //
 // This is an executable rather than an XCTest case because `swift test` cannot run on a machine
 // without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all twenty-four
+//     swift run Antagonise          # all twenty-seven
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -54,16 +56,17 @@ final class Stub: FreeAgentTransport {
     }
 }
 
-/// Holds the first request matching `gateMatch` open until released, so a user action can be
-/// interleaved with a refresh that is still in flight.
+/// Holds the first request matching `gateMatch` open until released, so a user action and a
+/// refresh can be interleaved. Gates stack, so two requests can each be held and released
+/// separately.
 @MainActor
 final class GatedStub: FreeAgentTransport {
-    let inner: Stub
+    let inner: any FreeAgentTransport & Sendable
     let gateMatch: String
     var armed = false
     private(set) var gateHit = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
-    init(inner: Stub, gateMatch: String) { self.inner = inner; self.gateMatch = gateMatch }
+    init(inner: any FreeAgentTransport & Sendable, gateMatch: String) { self.inner = inner; self.gateMatch = gateMatch }
 
     /// Registers the continuation synchronously on the main actor, so `release()` can never run
     /// before the waiter is recorded — that ordering hole deadlocks instead of failing.
@@ -101,9 +104,11 @@ func tasks(_ ids: [Int] = [1, 2]) -> String {
 }
 /// `updatedAt` is the tie-break `MostRecentTask.resolve` uses *within* a day, so scenarios that
 /// need a deterministic order among same-day entries have to supply it; omitted, it decodes as
-/// nil, which sorts as `distantPast`.
-func slip(id: Int, task: Int, hours: String, datedOn: String, timerStart: String?, updatedAt: String? = nil) -> String {
-    let timer = timerStart.map { #""timer":{"running":true,"start_from":"\#($0)"}"# } ?? #""timer":null"#
+/// nil, which sorts as `distantPast`. `timerRunning` needs a `timerStart`; without one the timer
+/// is null.
+func slip(id: Int, task: Int, hours: String, datedOn: String, timerStart: String?, timerRunning: Bool = true,
+          updatedAt: String? = nil) -> String {
+    let timer = timerStart.map { #""timer":{"running":\#(timerRunning),"start_from":"\#($0)"}"# } ?? #""timer":null"#
     let updated = updatedAt.map { #","updated_at":"\#($0)""# } ?? ""
     return #"{"url":"\#(U)/timeslips/\#(id)","project":"\#(U)/projects/1","task":"\#(U)/tasks/\#(task)","user":"\#(U)/users/1","dated_on":"\#(datedOn)","hours":"\#(hours)","comment":null,\#(timer),"billed_on_invoice":null\#(updated)}"#
 }
@@ -1011,6 +1016,117 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     else { bad("the local cache still shows \(edited.comment!)") }
 }
 
+@MainActor func s25() async throws {
+    hdr(25, "A timer-start response saying the timer isn't running must fail the start")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(slip(id: 56, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))]}"#)
+    // A `timer` object that is present but stopped, where scenario 5's is null.
+    stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 56, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z", timerRunning: false))}"#)
+    do {
+        let started = try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+        bad("a timer FreeAgent reports as stopped was shown as running since \(started.timerStartedAt.map { "\($0)" } ?? "nothing")")
+    } catch DataStoreError.underlying(let message) where stub.log.contains(where: { $0.url.hasSuffix("/timer") }) {
+        ok("the start failed on FreeAgent's answer: \(message)")
+    } catch {
+        bad("the start failed for another reason: \(error)")
+    }
+    if store.currentRunningTimeslip == nil { ok("and nothing is cached as running") }
+    else { bad("\(store.currentRunningTimeslip!.id) is cached as running") }
+}
+
+@MainActor func s26() async throws {
+    hdr(26, "Switch task must keep the timer's start when FreeAgent's reply carries no timer")
+    let stub = Stub()
+    let start = "2026-08-19T09:00:00Z"
+    let startedAt = ISO8601DateFormatter().date(from: start)!
+    let running = slip(id: 700, task: 1, hours: "1.0", datedOn: today(), timerStart: start)
+    baseRules(stub, running: running, recent: "[\(running)]")
+    // The timer never stopped, but the PUT's reply carries none.
+    stub.setRule("timeslips/700", body: #"{"timeslip":\#(slip(id: 700, task: 2, hours: "1.0", datedOn: today(), timerStart: nil))}"#)
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+    let adoptedAtRefresh = store.currentRunningTimeslip?.timerStartedAt
+    guard adoptedAtRefresh == startedAt else {
+        bad("the refresh adopted \(adoptedAtRefresh.map { "\($0)" } ?? "no start"), not \(startedAt)"); return
+    }
+    guard let fresh = try await store.runningTimeslip() else { bad("no running timeslip"); return }
+    _ = try await store.updateTimeslip(id: fresh.id, taskId: "\(U)/tasks/2", projectId: "\(U)/projects/1",
+                                       clientId: "\(U)/contacts/1", date: fresh.day, hours: fresh.hours, comment: fresh.comment)
+    let switched = store.currentRunningTimeslip
+    print("   started \(startedAt); after the switch the store holds \(switched?.timerStartedAt.map { "\($0)" } ?? "no start")")
+    if switched?.taskId == "\(U)/tasks/2" { ok("the running entry is on the new task") }
+    else { bad("the running entry is still on \(switched?.taskId ?? "nothing")") }
+    if switched?.timerStartedAt == startedAt { ok("and keeps its timer start") }
+    else { bad("the switch replaced the timer start \(startedAt) with \(switched?.timerStartedAt.map { "\($0)" } ?? "nothing")") }
+
+    // `reconcile(with:)` counts from this start whenever it adopts the timer without one of its own.
+    let now = startedAt.addingTimeInterval(3 * 60 * 60)
+    let app = AppState(clock: { now }); app.logIn()
+    app.reconcile(with: store)
+    let adopted = app.trackingStartedAtForTesting
+    if app.trackingTask?.taskId == "\(U)/tasks/2", adopted == startedAt { ok("so a fresh adoption counts from it too") }
+    else { bad("a fresh adoption tracks \(app.trackingTask?.taskName ?? "nothing") from \(adopted.map { "\($0)" } ?? "nothing"), not Task2 from \(startedAt)") }
+}
+
+@MainActor func s27() async throws {
+    hdr(27, "A refresh that begins while a start is in flight must not commit over it")
+    // The start goes first and is held on its `POST /timer`, past the epoch's entry edge, while a
+    // refresh begins; the refresh is then held until the start has finished. Scenarios 1 and 2
+    // hold the refresh and mutate afterwards, which an entry-only epoch also passes.
+    @MainActor func race(timerStatus: Int) async throws
+        -> (store: FreeAgentDataStore, setUpAt: Date?, start: Result<RatchetTimeslip, Error>)? {
+        let stub = Stub()
+        baseRules(stub, running: nil, recent: "[]")
+        stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 43, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+        stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 43, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#,
+                     status: timerStatus)
+        let startGate = GatedStub(inner: stub, gateMatch: "/timer")
+        // `contacts` is fetched only by a refresh.
+        let refreshGate = GatedStub(inner: startGate, gateMatch: "contacts?")
+        let (store, ts) = makeStore(refreshGate); defer { ts.clear() }
+        try await store.refresh()
+        let setUpAt = store.lastRefreshedAt
+
+        startGate.armed = true
+        let start = Task { @MainActor in
+            try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+        }
+        guard await awaitGate(startGate) else { bad("start gate never fired"); return nil }
+        refreshGate.armed = true
+        let refresh = Task { @MainActor in try await store.refresh() }
+        guard await awaitGate(refreshGate) else { bad("refresh gate never fired"); return nil }
+        // The stub tells the refresh nothing is running, as FreeAgent would before the POST lands.
+        startGate.release()
+        let started = await start.result
+        refreshGate.release()
+        if case .failure(let error) = await refresh.result {
+            bad("the refresh threw, so the epoch guard went untested: \(error)"); return nil
+        }
+        return (store, setUpAt, started)
+    }
+
+    guard let succeeded = try await race(timerStatus: 200) else { return }
+    switch succeeded.start {
+    case .failure(let error):
+        bad("the start failed, so the race went untested: \(error)")
+    case .success(let started):
+        let running = succeeded.store.currentRunningTimeslip
+        if running?.id == started.id { ok("the start survived a refresh that began during it") }
+        else { bad("the refresh committed \"nothing running\" over the timer just started: running=\(running?.id ?? "nil")") }
+    }
+
+    // A start that throws may still have started the timer, so its exit counts as well.
+    guard let failed = try await race(timerStatus: 500) else { return }
+    guard case .failure = failed.start else { bad("the start succeeded, so its failure path went untested"); return }
+    if failed.store.lastRefreshedAt == failed.setUpAt { ok("and one that began during a failed start is discarded too") }
+    else { bad("a refresh that began during a failed start was taken as current") }
+    if failed.store.hasLocalWritesSinceRefresh { ok("so the next menu open fetches again") }
+    else { bad("the failed start left the cache looking fresh, so the next menu open skips refreshing") }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -1041,6 +1157,9 @@ Task { @MainActor in
         if want(22) { try await s22() }
         if want(23) { try await s23() }
         if want(24) { try await s24() }
+        if want(25) { try await s25() }
+        if want(26) { try await s26() }
+        if want(27) { try await s27() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)

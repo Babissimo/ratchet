@@ -38,7 +38,7 @@ Two things partly close the gap, and both are worth running before claiming a ch
   swift run Antagonise
   ```
 
-  Twenty-four scenarios drive the real `FreeAgentDataStore` against a stub transport and assert
+  Twenty-seven scenarios drive the real `FreeAgentDataStore` against a stub transport and assert
   the fixed behaviour for every local/remote divergence and staleness bug fixed in
   `cbcb28f..HEAD`. It exits non-zero on any regression. Run it after touching
   `FreeAgentDataStore`, `AppState`, or `AppState.reconcile(with:)`; see
