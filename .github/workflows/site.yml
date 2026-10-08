@@ -1,0 +1,63 @@
+# Deploys site/ to ratchet.babissimo.net whenever main changes it, and dry-runs
+# the deploy on pull requests that touch it.
+#
+# The deploy needs a CLOUDFLARE_API_TOKEN repository secret; site/README.md
+# says how to make one. Pull requests get no secret and need none.
+
+name: Site
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - site/**
+      - .github/workflows/site.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - site/**
+      - .github/workflows/site.yml
+  # Redeploys main without a change to site/, e.g. once the secret is first added.
+  workflow_dispatch:
+
+# Deploys to main queue rather than race; each pull request checks on its own.
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Dry run
+        if: github.event_name == 'pull_request'
+        run: npx wrangler deploy --dry-run
+
+      - name: Deploy
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # An identifier, not a credential; the token alone grants access.
+          CLOUDFLARE_ACCOUNT_ID: b8c54ac7f6fcc51428ff55dc618c2f5c
