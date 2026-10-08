@@ -523,6 +523,43 @@ final class FreeAgentDataStoreTests: XCTestCase {
         tokenStore.clear()
     }
 
+    func test_updateTimeslip_withNoComment_sendsAnEmptyOneSoFreeAgentClearsTheOldOne() async throws {
+        // FreeAgent leaves an attribute the PUT omits unchanged, so dropping the key would keep
+        // the comment the user just deleted.
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "/timeslips/42", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/42","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-10","hours":"1.0","comment":null,"timer":null}}"#.utf8)),
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[{"url":"https://api.sandbox.freeagent.com/v2/timeslips/42","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-10","hours":"1.0","comment":"Wireframes","timer":null}]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        XCTAssertEqual(store.timeslips.first?.comment, "Wireframes")
+
+        let updated = try await store.updateTimeslip(
+            id: "https://api.sandbox.freeagent.com/v2/timeslips/42",
+            taskId: "https://api.sandbox.freeagent.com/v2/tasks/1",
+            projectId: "https://api.sandbox.freeagent.com/v2/projects/1",
+            clientId: "https://api.sandbox.freeagent.com/v2/contacts/1",
+            date: CalendarDay.day(from: "2026-08-10")!,
+            hours: 1.0,
+            comment: nil
+        )
+
+        let putCall = try XCTUnwrap(transport.calls.last)
+        XCTAssertEqual(putCall.httpMethod, "PUT")
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(putCall.httpBody)) as? [String: [String: Any]])
+        XCTAssertEqual(envelope["timeslip"]?["comment"] as? String, "")
+        XCTAssertNil(updated.comment)
+        XCTAssertNil(store.timeslips.first?.comment)
+    }
+
     func test_stopTimer_queriesServerAndReturnsNilWhenCacheIsEmptyAndNothingIsRunning() async throws {
         // `stopTimer()` queries the server unconditionally, never trusting the cache either way
         // — this covers the "cache empty" half of that: an empty `currentRunningTimeslip` isn't
