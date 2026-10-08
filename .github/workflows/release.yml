@@ -1,12 +1,9 @@
-# Builds Ratchet.app on a tag push and attaches it, zipped, to a GitHub
-# Release. Unsigned and unnotarized — see TODO.md ("Distribution without
-# notarization") for why: no paid Apple Developer Program membership.
-# Users will need to right-click -> Open on first launch (documented in
-# README.md).
+# Builds Ratchet.app on a tag push (v1.2.0 → version 1.2.0) and attaches it, zipped, to a GitHub
+# Release. scripts/release.sh pushes the tag and then points the Homebrew tap at the result.
 #
-# Requires a real Mac runner (macos-latest) because the build links AppKit.
-# The app carries no FreeAgent credentials (the sign-in service in worker/
-# holds them), so the build needs no repository secrets.
+# Not notarized (see TODO.md, "Distribution without notarization"), and signed ad hoc because
+# the runner has no "Ratchet" certificate. The app carries no FreeAgent credentials (the sign-in
+# service in worker/ holds them), so the build needs no repository secrets.
 
 name: Release
 
@@ -15,27 +12,35 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
-  build-and-release:
-    runs-on: macos-latest
+  release:
+    # AppKit only links on macOS. Pinned so a runner image change can't swap the toolchain
+    # under a release.
+    runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Build (release)
-        run: swift build -c release
+      - name: Build Ratchet.app
+        run: RATCHET_VERSION="${GITHUB_REF_NAME#v}" scripts/build-app.sh release
 
-      - name: Assemble Ratchet.app
-        run: scripts/build-app.sh release
-
-      # ditto preserves resource forks and extended attributes, which zip
-      # doesn't — the standard way to zip a macOS .app bundle intact.
+      # ditto keeps the bundle's extended attributes and symlinks intact, which zip doesn't.
       - name: Zip Ratchet.app
         run: ditto -c -k --sequesterRsrc --keepParent .build/Ratchet.app Ratchet.app.zip
 
-      - name: Attach to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Ratchet.app.zip
+      - name: Publish the release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        # A re-run finds the release an earlier attempt created, so it replaces the asset instead.
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" Ratchet.app.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" Ratchet.app.zip \
+              --verify-tag --generate-notes --title "Ratchet ${GITHUB_REF_NAME#v}"
+          fi
+          echo "Ratchet.app.zip sha256: \`$(shasum -a 256 Ratchet.app.zip | cut -d' ' -f1)\`" \
+            >> "$GITHUB_STEP_SUMMARY"
