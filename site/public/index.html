@@ -38,6 +38,8 @@
   --menu-open: rgba(0, 0, 0, 0.09);
   --menu-hl: #0A62D9;
   --focus: #0A62D9;
+  --beckon: rgba(76, 175, 62, 0.7);
+  --beckon-tint: rgba(76, 175, 62, 0.2);
 
   --f-display: "Anybody", "Arial Black", sans-serif;
   --f-body: "Hanken Grotesk", system-ui, sans-serif;
@@ -66,6 +68,8 @@
     --menu-edge: rgba(255, 255, 255, 0.14);
     --menu-open: rgba(255, 255, 255, 0.12);
     --focus: #5A9BFF;
+    --beckon: rgba(108, 200, 92, 0.75);
+    --beckon-tint: rgba(108, 200, 92, 0.2);
   }
 }
 
@@ -110,6 +114,18 @@ h1, h2, p, dl, dd { margin: 0; }
 }
 #ratchet-item:hover, #ratchet-item[aria-expanded="true"] { background: var(--bar-press); }
 #ratchet-item svg { width: 17px; height: 17px; display: block; }
+/* Tracking green beckons from the status item until the menu is first opened, and from
+   Start tracking until a timer is first started. */
+#ratchet-item, .item.beckon { position: relative; isolation: isolate; }
+#ratchet-item::after, .item.beckon::after {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  border-radius: inherit; pointer-events: none;
+  background: var(--beckon-tint);
+  box-shadow: 0 0 0 1px var(--beckon), 0 0 14px 2px var(--beckon);
+  opacity: 0;
+}
+html:not(.tried) #ratchet-item::after { animation: beckon 2.4s ease-in-out infinite; }
+@keyframes beckon { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
 .clock { padding: 0 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 .hint {
@@ -294,6 +310,10 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
 .mi.open > .item:not(:focus) { background: var(--menu-open); }
 .item[aria-disabled="true"] { color: var(--menu-dim); }
 .item[aria-disabled="true"]:focus { background: none; color: var(--menu-dim); }
+/* Tighter than the status item's glow: the inline menu clips at its 5px padding. */
+.item.beckon::after { box-shadow: 0 0 0 1px var(--beckon), 0 0 6px var(--beckon); }
+html:not(.started) .item.beckon:not(:focus)::after { animation: beckon 2.4s ease-in-out infinite; }
+html:not(.started) .item.beckon:not(:focus) .gutter { color: var(--green-ink); }
 .gutter { flex: none; width: 13px; display: grid; place-items: center; margin-left: -3px; }
 .gutter svg { width: 11px; height: 11px; fill: currentColor; }
 .menu:not(.has-gutter) > .mi > .item > .gutter { display: none; }
@@ -325,6 +345,8 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
   html { scroll-behavior: auto; }
   .giant .bezel-turn, .giant .mark-bezel, .giant .mark-hand, .demo-log, .hint { transition: none; }
   .giant .minute { animation: none; }
+  html:not(.tried) #ratchet-item::after,
+  html:not(.started) .item.beckon:not(:focus)::after { animation: none; opacity: 0.7; }
 }
 </style>
 </head>
@@ -512,6 +534,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
 
   function start(r) {
     Object.assign(state, { screen: 'tracking', current: r, last: r, startedAt: Date.now(), remoteRunning: true });
+    html.classList.add('started');
     ratchet();
     say(`Tracking ${r.task}`, `FreeAgent's own timer is running on ${r.client} · ${r.project}, so it shows in the web app as well. The icon stays green until you stop it.`);
   }
@@ -637,7 +660,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
     }
     const r = state.last;
     return [
-      ...(r ? [{ label: `Start tracking ${r.task}`, sub: `${r.client} · ${r.project}`, icon: 'play', run: () => start(r) }] : []),
+      ...(r ? [{ label: `Start tracking ${r.task}`, sub: `${r.client} · ${r.project}`, icon: 'play', beckon: true, run: () => start(r) }] : []),
       { label: 'Start timer', items: startPicker },
       ...shared,
     ];
@@ -699,7 +722,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
       mi.item = item;
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'item' + (item.elapsed ? ' elapsed' : '');
+      b.className = 'item' + (item.elapsed ? ' elapsed' : '') + (item.beckon ? ' beckon' : '');
       b.tabIndex = -1;
       if ('check' in item) {
         b.setAttribute('role', 'menuitemcheckbox');
