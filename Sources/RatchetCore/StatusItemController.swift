@@ -385,10 +385,32 @@ public final class StatusItemController {
             handleSessionExpired()
             return
         }
+        if let caveat = error as? DataStoreError, caveat.isUnconfirmed {
+            presentUnconfirmed(caveat)
+            return
+        }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn't \(action)"
         alert.informativeText = "\(error)"
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// A create FreeAgent didn't confirm isn't titled as a failure, for the reason
+    /// `presentLoggedConfirmation` gives. `note` follows the explanation.
+    private func presentUnconfirmed(_ caveat: DataStoreError, note: String? = nil) {
+        presentFormOutcome("Not Confirmed", ["\(caveat)", note].compactMap { $0 }.joined(separator: " "))
+    }
+
+    /// What became of a form's create, under the forms' icon.
+    private func presentFormOutcome(_ title: String, _ text: String, style: NSAlert.Style = .warning) {
+        let alert = NSAlert()
+        alert.icon = Self.formIcon
+        alert.alertStyle = style
+        alert.messageText = title
+        alert.informativeText = text
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
@@ -902,6 +924,11 @@ public final class StatusItemController {
                     billingRate: billingRate,
                     billingPeriod: billingRate == nil ? nil : billingPeriod
                 )
+            } catch let caveat as DataStoreError where caveat.isUnconfirmed {
+                let note = switchingFromRunningTimer
+                    ? "The running timer is still on its previous task." : "Tracking hasn't started."
+                self.presentUnconfirmed(caveat, note: note)
+                return
             } catch {
                 self.presentAPIError(error, action: "create the task")
                 return
@@ -915,7 +942,15 @@ public final class StatusItemController {
             // rather than implying the task creation failed too.
             guard let client = self.dataStore.clients.first(where: { $0.id == clientId }),
                   let project = client.projects.first(where: { $0.id == projectId })
-            else { return }
+            else {
+                // Refreshing won't bring back a project the last refresh dropped, so this names the
+                // task that now exists rather than suggesting it.
+                let gone = DataStoreError.underlying(
+                    "\u{201C}\(task.name)\u{201D} was created, but Ratchet no longer lists its project, so it can't track it."
+                )
+                self.presentAPIError(gone, action: switchingFromRunningTimer ? "switch tasks" : "start tracking the new task")
+                return
+            }
             let ref = TrackedTaskRef(
                 clientId: client.id, clientName: client.name,
                 projectId: project.id, projectName: project.name,
@@ -1085,6 +1120,9 @@ public final class StatusItemController {
                     billingRate: billingRate,
                     billingPeriod: billingRate == nil ? nil : billingPeriod
                 )
+            } catch let caveat as DataStoreError where caveat.isUnconfirmed {
+                self.presentUnconfirmed(caveat, note: "No time was logged against it.")
+                return
             } catch {
                 self.presentAPIError(error, action: "create the task")
                 return
@@ -1131,7 +1169,7 @@ public final class StatusItemController {
             alert.messageText = caveat == .alreadyLogged ? "Already Logged" : "Not Confirmed"
             alert.informativeText = ["\(duration) for \(taskName) on \(dateText).", "\(caveat)", retryAdvice]
                 .compactMap { $0 }.joined(separator: " ")
-            if caveat == .unconfirmed { alert.alertStyle = .warning }
+            if caveat.isUnconfirmed { alert.alertStyle = .warning }
         } else {
             alert.messageText = "Time Logged"
             alert.informativeText = "\(duration) logged for \(taskName) on \(dateText)."
@@ -1603,6 +1641,14 @@ public final class StatusItemController {
                     endsOn: endsOn
                 )
                 self.rebuild()
+                // Otherwise nothing shows it was made: the menu has no client to list it under.
+                if !self.dataStore.clients.contains(where: { $0.id == clientId }) {
+                    self.presentFormOutcome(
+                        "Project Created",
+                        "\u{201C}\(name)\u{201D} was created, but Ratchet no longer lists its client, so it won't appear in the menu.",
+                        style: .informational
+                    )
+                }
             } catch {
                 self.presentAPIError(error, action: "create the project")
             }
@@ -1719,5 +1765,10 @@ public final class StatusItemController {
 
 private extension DataStoreError {
     /// The `logTime` outcomes that qualify an entry rather than fail it.
-    var qualifiesLoggedEntry: Bool { self == .alreadyLogged || self == .unconfirmed }
+    var qualifiesLoggedEntry: Bool { self == .alreadyLogged || self == .unconfirmed(.timeslip) }
+
+    var isUnconfirmed: Bool {
+        if case .unconfirmed = self { return true }
+        return false
+    }
 }

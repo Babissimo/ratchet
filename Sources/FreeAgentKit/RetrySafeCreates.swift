@@ -9,11 +9,16 @@ protocol CreatedResource {
 }
 
 extension FreeAgentTimeslipDTO: CreatedResource {}
+extension FreeAgentContactDTO: CreatedResource {}
+extension FreeAgentProjectDTO: CreatedResource {}
+extension FreeAgentTaskDTO: CreatedResource {}
 
 /// What a create sends that identifies the resource it makes, so a create whose outcome is
 /// unknown can be matched both to that resource and to a retry.
 protocol CreateIdentity: Hashable {
     associatedtype Resource: CreatedResource
+    /// What the create makes, for the error that says it may not have.
+    static var made: DataStoreError.Resource { get }
     /// Whether `resource` is one a create with this identity would have made.
     func identifies(_ resource: Resource) -> Bool
 }
@@ -106,7 +111,7 @@ final class RetrySafeCreates<Identity: CreateIdentity> {
             // Not the original error: a plain network error reads as "not created" and invites a
             // blind retry.
             guard let found = try await findCreated(identity, by: record, in: candidates) else {
-                throw DataStoreError.unconfirmed
+                throw DataStoreError.unconfirmed(Identity.made)
             }
             settle(identity, as: found)
             return (found, false)
@@ -144,7 +149,7 @@ final class RetrySafeCreates<Identity: CreateIdentity> {
         do {
             listed = try await candidates(earliest)
         } catch where !error.indicatesSessionExpired {
-            throw DataStoreError.unconfirmed
+            throw DataStoreError.unconfirmed(Identity.made)
         }
         let matches = listed.compactMap { resource -> (resource: Resource, createdAt: Date)? in
             guard let createdAt = resource.createdAt, createdAt >= earliest, !attempt.knownIds.contains(resource.url),

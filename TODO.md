@@ -116,11 +116,6 @@ that constraint; each item notes what it costs to skip signing.
   timeslip's `hours`, so it would otherwise show a stale, paused-at
   duration).
 
-- [ ] **Duplicate clients, projects or tasks when a create response is lost.**
-  `addClient`, `addProject` and `addTask` (including the task half of "New
-  task & log time") have no equivalent of `logTime`'s lost-create lookup, so
-  retrying after a dropped response creates a second one.
-
 ## Not blocking, revisit later
 
 - Code signing + notarization proper, if the $99/yr ever becomes worth it
