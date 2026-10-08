@@ -198,6 +198,17 @@ h1 {
 }
 .log-text { font-size: 0.97rem; line-height: 1.5; }
 .log-text strong { font-weight: 650; }
+.hero-links {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px;
+  margin-top: clamp(22px, 3.5vh, 32px);
+}
+.cta {
+  padding: 10px 16px; border-radius: 7px;
+  background: var(--ink); color: var(--ground);
+  font-weight: 650; text-decoration: none;
+  transition: background-color 0.2s;
+}
+.cta:hover { background: var(--green-ink); }
 
 /* ---- Sections ---- */
 main section { scroll-margin-top: calc(var(--bar-h) + 12px); }
@@ -220,6 +231,28 @@ h2 {
 }
 .features dt { font: 680 1.08rem/1.35 var(--f-display); font-stretch: 108%; }
 .features dd { max-width: 40rem; color: var(--ink); }
+.features code { font: 400 0.86em/1 var(--f-mono); font-stretch: 87.5%; }
+.section-note { max-width: 36rem; color: var(--ink-soft); }
+
+/* ---- Install ---- */
+.cmd {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  margin-bottom: 12px; padding: 12px 14px;
+  border: 1px solid var(--rule); border-radius: 8px;
+}
+.cmd code { flex: 1 1 16rem; font-size: 0.86rem; line-height: 1.5; user-select: all; }
+.cmd code::before { content: "$ "; color: var(--ink-soft); }
+.copy {
+  padding: 6px 10px; border: 1px solid var(--rule); border-radius: 5px;
+  background: none; color: inherit; cursor: pointer;
+  font: 500 0.68rem/1 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase;
+}
+.copy:hover { background: var(--bar-press); }
+.copy.done { border-color: var(--green-ink); color: var(--green-ink); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
 
 footer {
   padding: 32px var(--gutter) 48px; border-top: 1px solid var(--rule);
@@ -306,6 +339,8 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
   <nav aria-label="Sections">
     <a href="#top">Ratchet</a>
     <a href="#features">What it does</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/Babissimo/ratchet">GitHub</a>
   </nav>
   <div class="status">
     <div class="status-item">
@@ -333,6 +368,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
       <p class="wordmark"><b>Ratchet</b><span>for FreeAgent, on macOS</span></p>
       <h1>Start the clock from the menu bar.</h1>
       <p class="lede">Ratchet starts and stops FreeAgent timers without a browser tab. While one is running the icon turns green, so a glance tells you whether you are on the clock.</p>
+      <p class="hero-links"><a class="cta" href="#install">Install Ratchet</a><a href="https://github.com/Babissimo/ratchet">Source on GitHub</a></p>
       <div class="demo-log" aria-live="polite">
         <p class="log-label">Try it</p>
         <p class="log-text"><strong>The icon in the menu bar above opens Ratchet's menu.</strong> This copy works, with invented clients, and nothing in it reaches FreeAgent.</p>
@@ -363,6 +399,32 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
         <div>
           <dt>Straight to FreeAgent</dt>
           <dd>You sign in to FreeAgent in your browser and Ratchet talks to its API directly. A small sign-in service holds Ratchet's FreeAgent app credentials and stores nothing; your time entries never pass through it. There is no Ratchet account, and your sign-in tokens stay in the macOS Keychain.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="install" class="band">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Install</h2>
+        <p class="section-note">Ratchet needs macOS 13 or later, on an Intel or Apple silicon Mac.</p>
+      </div>
+      <dl class="features">
+        <div>
+          <dt>With Homebrew</dt>
+          <dd>
+            <div class="cmd">
+              <code>brew install babissimo/<wbr>ratchet/<wbr>ratchet</code>
+              <button class="copy" type="button" hidden>Copy</button>
+              <span class="sr-only" role="status"></span>
+            </div>
+            <p>Upgrade later with <code>brew upgrade ratchet</code>, then open Ratchet again.</p>
+          </dd>
+        </div>
+        <div>
+          <dt>As a download</dt>
+          <dd>Download <a href="https://github.com/Babissimo/ratchet/releases/latest">Ratchet.app.zip from the latest release</a>, unzip it, and move Ratchet.app to Applications. Ratchet isn't notarised by Apple, so macOS refuses to open a downloaded copy the first time; the <a href="https://github.com/Babissimo/ratchet#installation">README</a> explains how to let it through. Homebrew installs skip this.</dd>
         </div>
       </dl>
     </div>
@@ -823,6 +885,36 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
   setInterval(clock, 10e3);
 
   addEventListener('scroll', () => html.classList.toggle('scrolled', scrollY > 120), { passive: true });
+
+  // ---- Install command ----
+  // The button stays hidden where the Clipboard API is unavailable; the command is still selectable.
+  const copy = document.querySelector('.cmd .copy');
+  const command = copy.previousElementSibling;
+  const copyStatus = copy.nextElementSibling;
+  let copyReset = 0;
+  function showCopy(label, status, done) {
+    copy.textContent = label;
+    copy.classList.toggle('done', done);
+    copyStatus.textContent = status;
+  }
+  function copyFeedback(label, status, done) {
+    showCopy(label, status, done);
+    clearTimeout(copyReset);
+    copyReset = setTimeout(() => showCopy('Copy', '', false), 2500);
+  }
+  if (navigator.clipboard) {
+    copy.hidden = false;
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(command.textContent);
+        copyFeedback('Copied', 'Command copied to the clipboard.', true);
+      } catch {
+        // Clipboard access can be refused per site; selecting the command leaves one keystroke.
+        getSelection().selectAllChildren(command);
+        copyFeedback('Press ⌘C', 'The command is selected. Press Command-C to copy it.', false);
+      }
+    });
+  }
 
   render();
 })();

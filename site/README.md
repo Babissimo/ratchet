@@ -11,6 +11,7 @@ npm run dev
 npm run deploy
 ```
 
-The page copies two things from the app by hand, so update it alongside them: the bezel path in
-`public/index.html` is the shipped mark from `../design/icons/curve-long-thin-base.svg`, and the
-demo menu mirrors `../Sources/RatchetCore/MenuBuilder.swift`.
+The page copies three things by hand, so update it alongside them: the bezel path in
+`public/index.html` is the shipped mark from `../design/icons/curve-long-thin-base.svg`, the
+demo menu mirrors `../Sources/RatchetCore/MenuBuilder.swift`, and the Install section repeats
+the Homebrew command and minimum macOS version from `../README.md`.
