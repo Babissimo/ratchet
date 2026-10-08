@@ -2,9 +2,16 @@
 import Foundation
 import RatchetCore
 
+/// `value` as the forms enter it: trimmed, and absent when empty, so it matches the null or ""
+/// FreeAgent may hold for an absent one.
+private func asEntered(_ value: String?) -> String? {
+    TaskNameValidator.validate(value ?? "")
+}
+
 /// A timeslip as `POST /timeslips` and `PUT /timeslips/:id` take it. A create is identified by
 /// its whole body, so only an identical retry is matched to one whose outcome is unknown.
 private struct TimeslipBody: Encodable, CreateIdentity {
+    static let made = DataStoreError.Resource.timeslip
     let project: String
     let task: String
     let user: String
@@ -13,13 +20,67 @@ private struct TimeslipBody: Encodable, CreateIdentity {
     let comment: String?
 
     /// Whether `dto` records this entry. Hours compare numerically to within half a minute,
-    /// since FreeAgent echoes the decimal it stored rather than the string sent, and comments
-    /// compare as the log form normalises them, since an absent one may come back as null or "".
+    /// since FreeAgent echoes the decimal it stored rather than the string sent.
     func identifies(_ dto: FreeAgentTimeslipDTO) -> Bool {
         guard dto.user == user, dto.project == project, dto.task == task, dto.datedOn == dated_on,
               let sent = Double(hours), let stored = Double(dto.hours), abs(sent - stored) < 1.0 / 120
         else { return false }
-        return TaskNameValidator.validate(dto.comment ?? "") == TaskNameValidator.validate(comment ?? "")
+        return asEntered(comment) == asEntered(dto.comment)
+    }
+}
+
+// The identities below hold names as entered, so the key a retry is matched by and the test a
+// listed resource must pass are the same comparison.
+
+/// A new contact, identified as the forms name it: by its organisation, or by first and last name
+/// when it has none. An organisation's contact person is optional, so a retry may omit it.
+private struct ContactIdentity: CreateIdentity {
+    static let made = DataStoreError.Resource.client
+    let organisationName: String?
+    let firstName: String?
+    let lastName: String?
+
+    init(organisationName: String?, firstName: String?, lastName: String?) {
+        self.organisationName = asEntered(organisationName)
+        let isPerson = self.organisationName == nil
+        self.firstName = isPerson ? asEntered(firstName) : nil
+        self.lastName = isPerson ? asEntered(lastName) : nil
+    }
+
+    func identifies(_ dto: FreeAgentContactDTO) -> Bool {
+        self == ContactIdentity(organisationName: dto.organisationName, firstName: dto.firstName, lastName: dto.lastName)
+    }
+}
+
+/// A new project, identified by its name under its contact.
+private struct ProjectIdentity: CreateIdentity {
+    static let made = DataStoreError.Resource.project
+    let contact: String
+    let name: String?
+
+    init(contact: String, name: String) {
+        self.contact = contact
+        self.name = asEntered(name)
+    }
+
+    func identifies(_ dto: FreeAgentProjectDTO) -> Bool {
+        self == ProjectIdentity(contact: dto.contact, name: dto.name)
+    }
+}
+
+/// A new task, identified by its name under its project.
+private struct TaskIdentity: CreateIdentity {
+    static let made = DataStoreError.Resource.task
+    let project: String
+    let name: String?
+
+    init(project: String, name: String) {
+        self.project = project
+        self.name = asEntered(name)
+    }
+
+    func identifies(_ dto: FreeAgentTaskDTO) -> Bool {
+        self == TaskIdentity(project: dto.project, name: dto.name)
     }
 }
 
@@ -44,6 +105,9 @@ public final class FreeAgentDataStore: DataStore {
     private let environment: FreeAgentEnvironment
     private let clock: () -> Date
     private let timeslipCreates: RetrySafeCreates<TimeslipBody>
+    private let contactCreates: RetrySafeCreates<ContactIdentity>
+    private let projectCreates: RetrySafeCreates<ProjectIdentity>
+    private let taskCreates: RetrySafeCreates<TaskIdentity>
     /// project URL -> client URL, so timeslip DTOs (which only know their
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
@@ -86,6 +150,9 @@ public final class FreeAgentDataStore: DataStore {
         self.environment = environment
         self.clock = clock
         timeslipCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
+        contactCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
+        projectCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
+        taskCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
     }
 
     /// Tracks an in-flight `refresh()` so concurrent callers share one round trip. Same idiom as
@@ -370,17 +437,31 @@ public final class FreeAgentDataStore: DataStore {
                 let postcode: String?
                 let country: String?
             }
-            let created: FreeAgentContactDTO = try await apiClient.post(
-                "contacts", envelopeKey: "contact",
-                body: CreateContactBody(
-                    organisation_name: organisationName, first_name: firstName, last_name: lastName,
-                    email: email, phone_number: phoneNumber,
-                    address1: address1, town: town, postcode: postcode, country: country
-                )
+            let body = CreateContactBody(
+                organisation_name: organisationName, first_name: firstName, last_name: lastName,
+                email: email, phone_number: phoneNumber,
+                address1: address1, town: town, postcode: postcode, country: country
+            )
+            // Here and in `addProject` and `addTask`, an earlier attempt's result is returned as this
+            // one's: unlike a second time entry, a second client, project or task under the same
+            // name is not what a retry means.
+            let (created, _) = try await contactCreates.create(
+                ContactIdentity(organisationName: organisationName, firstName: firstName, lastName: lastName),
+                cachedIds: { [self] in Set(clients.map(\.id)) },
+                // Anything created since `createdSince` has been updated since then too.
+                candidates: { [self] createdSince in
+                    try await apiClient.getList(
+                        "contacts", query: [URLQueryItem(name: "updated_since", value: createdSince.ISO8601Format())],
+                        listKey: "contacts"
+                    )
+                },
+                post: { [self] in try await apiClient.post("contacts", envelopeKey: "contact", body: body) }
             )
             let client = created.toRatchetClient(projects: [])
+            // An upsert that keeps a cached copy's projects: a client adopted from an earlier
+            // attempt may already be cached, with projects added since.
             if let index = clients.firstIndex(where: { $0.id == client.id }) {
-                clients[index] = client
+                clients[index] = client.withProjects(clients[index].projects)
             } else {
                 clients.append(client)
             }
@@ -411,16 +492,36 @@ public final class FreeAgentDataStore: DataStore {
                 let starts_on: String?
                 let ends_on: String?
             }
-            let created: FreeAgentProjectDTO = try await apiClient.post(
-                "projects", envelopeKey: "project",
-                body: CreateProjectBody(
-                    contact: clientId, name: name, status: status.rawValue, currency: currency,
-                    budget: String(budget), budget_units: budgetUnits.rawValue,
-                    hours_per_day: String(hoursPerDay), normal_billing_rate: String(normalBillingRate),
-                    billing_period: billingPeriod.rawValue, uses_project_invoice_sequence: usesProjectInvoiceSequence,
-                    contract_po_reference: contractPoReference,
-                    starts_on: startsOn.map(dateString), ends_on: endsOn.map(dateString)
-                )
+            let body = CreateProjectBody(
+                contact: clientId, name: name, status: status.rawValue, currency: currency,
+                budget: String(budget), budget_units: budgetUnits.rawValue,
+                hours_per_day: String(hoursPerDay), normal_billing_rate: String(normalBillingRate),
+                billing_period: billingPeriod.rawValue, uses_project_invoice_sequence: usesProjectInvoiceSequence,
+                contract_po_reference: contractPoReference,
+                starts_on: startsOn.map(dateString), ends_on: endsOn.map(dateString)
+            )
+            let (created, _) = try await projectCreates.create(
+                ProjectIdentity(contact: clientId, name: name),
+                cachedIds: { [self] in Set(clients.flatMap(\.projects).map(\.id)) },
+                candidates: { [self] _ in
+                    let ofClient = URLQueryItem(name: "contact", value: clientId)
+                    var listed: [FreeAgentProjectDTO] = try await apiClient.getList("projects", query: [ofClient], listKey: "projects")
+                    // FreeAgent doesn't document which statuses the plain list includes, and a
+                    // retry may name another status than the attempt it settles, so every other
+                    // status's view is asked too.
+                    for other in ProjectStatus.allCases where other != .active {
+                        let view = URLQueryItem(name: "view", value: other.rawValue.lowercased())
+                        do {
+                            listed += try await apiClient.getList("projects", query: [ofClient, view], listKey: "projects")
+                        } catch FreeAgentError.apiError(let status, _) where [400, 404, 422].contains(status) {
+                            // A view FreeAgent refuses says nothing about this project. One left
+                            // unanswered (timed out, rate-limited, failed) might have listed it, so
+                            // that still throws.
+                        }
+                    }
+                    return listed
+                },
+                post: { [self] in try await apiClient.post("projects", envelopeKey: "project", body: body) }
             )
             projectToClientId[created.url] = clientId
             let project = created.toRatchetProject(tasks: [])
@@ -442,13 +543,16 @@ public final class FreeAgentDataStore: DataStore {
                 let billing_rate: String?
                 let billing_period: String?
             }
-            let created: FreeAgentTaskDTO = try await apiClient.post(
-                "tasks", envelopeKey: "task",
-                query: [URLQueryItem(name: "project", value: projectId)],
-                body: CreateTaskBody(
-                    name: name, is_billable: isBillable, status: status.rawValue,
-                    billing_rate: billingRate.map { String($0) }, billing_period: billingPeriod?.rawValue
-                )
+            let body = CreateTaskBody(
+                name: name, is_billable: isBillable, status: status.rawValue,
+                billing_rate: billingRate.map { String($0) }, billing_period: billingPeriod?.rawValue
+            )
+            let inProject = [URLQueryItem(name: "project", value: projectId)]
+            let (created, _) = try await taskCreates.create(
+                TaskIdentity(project: projectId, name: name),
+                cachedIds: { [self] in Set(clients.flatMap(\.projects).flatMap(\.tasks).map(\.id)) },
+                candidates: { [self] _ in try await apiClient.getList("tasks", query: inProject, listKey: "tasks") },
+                post: { [self] in try await apiClient.post("tasks", envelopeKey: "task", query: inProject, body: body) }
             )
             let task = created.toRatchetTask()
             guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }),
@@ -577,13 +681,16 @@ public final class FreeAgentDataStore: DataStore {
         resolvedTimeslip(dto, using: projectToClientId, clientId: clientId)
     }
 
+    /// An upsert, since a project adopted from an earlier attempt may already be cached.
     private func withUpsertedProject(_ client: RatchetClient, _ project: RatchetProject) -> RatchetClient {
         if let index = client.projects.firstIndex(where: { $0.id == project.id }) {
-            return client.replacingProject(at: index, with: project)
+            // A cached copy keeps its tasks, as a cached client keeps its projects in `addClient`.
+            return client.replacingProject(at: index, with: project.withTasks(client.projects[index].tasks))
         }
         return client.withProjects(client.projects + [project])
     }
 
+    /// An upsert, since a task adopted from an earlier attempt may already be cached.
     private func withUpsertedTask(_ client: RatchetClient, projectIndex: Int, task: RatchetTask) -> RatchetClient {
         let existing = client.projects[projectIndex]
         let tasks: [RatchetTask]

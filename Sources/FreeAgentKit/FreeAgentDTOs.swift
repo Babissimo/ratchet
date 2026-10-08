@@ -49,6 +49,8 @@ public struct FreeAgentContactDTO: Codable {
     public let town: String?
     public let postcode: String?
     public let country: String?
+    /// Server time (UTC). Optional for the same reason as `FreeAgentTimeslipDTO.updatedAt`.
+    public let createdAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case url
@@ -58,6 +60,7 @@ public struct FreeAgentContactDTO: Codable {
         case email
         case phoneNumber = "phone_number"
         case address1, town, postcode, country
+        case createdAt = "created_at"
     }
 }
 
@@ -76,6 +79,8 @@ public struct FreeAgentProjectDTO: Codable {
     public let contractPoReference: String?
     public let startsOn: String?
     public let endsOn: String?
+    /// Server time (UTC). Optional for the same reason as `FreeAgentTimeslipDTO.updatedAt`.
+    public let createdAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case url, contact, name, status, currency
@@ -88,6 +93,7 @@ public struct FreeAgentProjectDTO: Codable {
         case contractPoReference = "contract_po_reference"
         case startsOn = "starts_on"
         case endsOn = "ends_on"
+        case createdAt = "created_at"
     }
 }
 
@@ -99,6 +105,8 @@ public struct FreeAgentTaskDTO: Codable {
     public let status: String
     public let billingRate: String?
     public let billingPeriod: String?
+    /// Server time (UTC). Optional for the same reason as `FreeAgentTimeslipDTO.updatedAt`.
+    public let createdAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case url, project, name
@@ -106,6 +114,7 @@ public struct FreeAgentTaskDTO: Codable {
         case status
         case billingRate = "billing_rate"
         case billingPeriod = "billing_period"
+        case createdAt = "created_at"
     }
 }
 

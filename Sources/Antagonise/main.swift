@@ -12,16 +12,19 @@
 // FreeAgent reports as not running, and an edit whose reply carries no timer); 27-29 cover a
 // refresh that overlaps a mutation (one that begins during a start and commits after it, which the
 // epoch's bump on exit catches, and one that commits during a stop, having begun before it or
-// during it, which the count of mutations in flight catches). Each drives the real
-// `FreeAgentDataStore` against a scriptable stub transport and asserts the *fixed* behaviour, so a
-// `BUG` line means a regression. Exits non-zero if any scenario fails.
+// during it, which the count of mutations in flight catches); 30-32 cover a new client, project or
+// task whose create response is lost, which a retry must adopt rather than make again without
+// taking an earlier one of the same name for it, and a create FreeAgent refuses, which must read
+// as refused. Each drives the real `FreeAgentDataStore` against a scriptable stub transport and
+// asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
+// scenario fails.
 //
 // This is an executable rather than an XCTest case because `swift test` cannot run on a machine
 // without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all twenty-nine
+//     swift run Antagonise          # all thirty-two
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -907,7 +910,7 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     server.offlineAfterCreate = true
     do { _ = try await logTask1(store); bad("reported success with nothing confirmed") } catch {
         print("   still offline -> \(error)")
-        if case DataStoreError.unconfirmed = error { ok("the error says the entry may exist, not that it failed") }
+        if case DataStoreError.unconfirmed(.timeslip) = error { ok("the error says the entry may exist, not that it failed") }
         else { bad("the error reads as a plain failure, inviting a blind retry") }
     }
     server.offlineAfterCreate = false
@@ -992,7 +995,7 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     let secondResult = await second.result
     print("   creates sent after \(server.lookupsAtCreate) lookups; server holds \(server.ids)")
 
-    if case .failure(DataStoreError.unconfirmed) = firstResult { ok("the first is reported unconfirmed") }
+    if case .failure(DataStoreError.unconfirmed(.timeslip)) = firstResult { ok("the first is reported unconfirmed") }
     else { bad("the first ended \(firstResult), not unconfirmed") }
     // Racing, the second posts before the first is settled: the first's lookup can then adopt
     // the second's entry, and the second's success clears the first's record.
@@ -1228,6 +1231,376 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     else { bad("the refresh put back the timer just stopped: running=\(store.currentRunningTimeslip!.id)") }
 }
 
+/// FreeAgent's contacts, projects and tasks in miniature, as `TimeslipServer` is its timeslips:
+/// a create is applied before faults are injected, and lists are answered from what is held,
+/// filtered as FreeAgent documents. It starts out holding the client, project and tasks
+/// `baseRules` describes. Everything else falls through to `inner`.
+@MainActor
+final class ResourceServer: FreeAgentTransport {
+    enum Kind: String, CaseIterable {
+        case contacts, projects, tasks
+        var envelopeKey: String { String(rawValue.dropLast()) }
+        /// The documented list filter a lookup narrows by, which a refresh never sends.
+        var lookupFilter: String {
+            switch self {
+            case .contacts: return "updated_since"
+            case .projects: return "contact"
+            case .tasks: return "project"
+            }
+        }
+    }
+    /// `refused` is a 422 and `unavailable` a 503, neither of them applied.
+    enum CreateFault { case none, loseResponse, neverArrives, refused, unavailable }
+    let inner: Stub
+    var createFault = CreateFault.none
+    /// When set, the status every projects list that names a `view` is answered with.
+    var projectViewStatus: Int?
+    /// After the next create is applied, drops its response and every request after it.
+    var offlineAfterCreate = false
+    var offline = false
+    private(set) var held: [Kind: [[String: Any]]] = [:]
+    /// Every create sent, whether or not it arrived.
+    private(set) var posts: [Kind: Int] = [:]
+    private(set) var lookups: [Kind: Int] = [:]
+
+    init(inner: Stub) {
+        self.inner = inner
+        let longAgo = Date(timeIntervalSince1970: 1_767_225_600)
+        add(.contacts, ["organisation_name": "Acme"], createdAt: longAgo, url: "\(U)/contacts/1")
+        add(.projects, projectRecord("Site"), createdAt: longAgo, url: "\(U)/projects/1")
+        for n in [1, 2] { add(.tasks, taskRecord("Task\(n)"), createdAt: longAgo, url: "\(U)/tasks/\(n)") }
+    }
+
+    func ids(_ kind: Kind) -> [String] { (held[kind] ?? []).compactMap { $0["url"] as? String } }
+
+    /// Holds `record` as though FreeAgent had created it at `createdAt`, and returns its id.
+    @discardableResult
+    func add(_ kind: Kind, _ record: [String: Any], createdAt: Date, updatedAt: Date? = nil, url: String? = nil) -> String {
+        var record = record
+        let url = url ?? "\(U)/\(kind.rawValue)/\(100 + ids(kind).count)"
+        record["url"] = url
+        record["created_at"] = ISO8601DateFormatter().string(from: createdAt)
+        record["updated_at"] = ISO8601DateFormatter().string(from: updatedAt ?? createdAt)
+        held[kind, default: []].append(record)
+        return url
+    }
+
+    nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let answer = try await answer(request) { return answer }
+        return try await inner.send(request)
+    }
+
+    private func answer(_ request: URLRequest) throws -> (Data, HTTPURLResponse)? {
+        let url = request.url!
+        let kind = Kind.allCases.first { url.path.hasSuffix("/v2/\($0.rawValue)") }
+        if let kind, request.httpMethod == "POST" { posts[kind, default: 0] += 1 }
+        if offline { throw URLError(.notConnectedToInternet) }
+        guard let kind else { return nil }
+        let query = Dictionary(
+            (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") },
+            uniquingKeysWith: { _, last in last }
+        )
+        if request.httpMethod == "POST" {
+            switch createFault {
+            case .neverArrives: throw URLError(.notConnectedToInternet)
+            case .refused: return try respond(request, ["errors": ["error": ["message": "Name is invalid"]]], status: 422)
+            case .unavailable: return try respond(request, [String: Any](), status: 503)
+            case .none, .loseResponse: break
+            }
+            let envelope = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: [String: Any]]
+            var record = envelope?[kind.envelopeKey] ?? [:]
+            // A task's project travels in the create's query, not its body.
+            if kind == .tasks { record["project"] = query["project"] }
+            add(kind, record, createdAt: Date())
+            if offlineAfterCreate { offline = true; throw URLError(.networkConnectionLost) }
+            if createFault == .loseResponse { throw URLError(.networkConnectionLost) }
+            return try respond(request, [kind.envelopeKey: held[kind]!.last!], status: 201)
+        }
+        var listed = held[kind] ?? []
+        if let value = query[kind.lookupFilter] {
+            lookups[kind, default: 0] += 1
+            listed = listed.filter { record in
+                guard kind == .contacts else { return record[kind.lookupFilter] as? String == value }
+                let formatter = ISO8601DateFormatter()
+                guard let updated = formatter.date(from: record["updated_at"] as? String ?? ""),
+                      let since = formatter.date(from: value) else { return true }
+                return updated >= since
+            }
+        }
+        // FreeAgent doesn't document the projects list's default view, so this takes the
+        // narrowest reading: active projects only, unless `view` names another status.
+        if kind == .projects {
+            if let status = projectViewStatus, query["view"] != nil { return try respond(request, [String: Any](), status: status) }
+            let view = query["view"] ?? "active"
+            listed = listed.filter { ($0["status"] as? String)?.lowercased() == view }
+        }
+        return try respond(request, [kind.rawValue: listed], status: 200)
+    }
+
+    private func respond(_ request: URLRequest, _ object: Any, status: Int) throws -> (Data, HTTPURLResponse) {
+        (try JSONSerialization.data(withJSONObject: object),
+         HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+func projectRecord(_ name: String) -> [String: Any] {
+    ["contact": "\(U)/contacts/1", "name": name, "status": "Active", "currency": "GBP", "budget": "0",
+     "budget_units": "Hours", "hours_per_day": "8", "normal_billing_rate": "0", "billing_period": "hour",
+     "uses_project_invoice_sequence": false]
+}
+
+func taskRecord(_ name: String) -> [String: Any] {
+    ["project": "\(U)/projects/1", "name": name, "is_billable": true, "status": "Active"]
+}
+
+@MainActor
+func makeClient(_ store: FreeAgentDataStore, _ name: String) async throws -> String {
+    try await store.addClient(organisationName: name, firstName: nil, lastName: nil, email: nil, phoneNumber: nil,
+                              address1: nil, town: nil, postcode: nil, country: nil).id
+}
+
+@MainActor
+func makeProject(
+    _ store: FreeAgentDataStore, _ name: String, for client: String = "\(U)/contacts/1", status: ProjectStatus = .active
+) async throws -> String {
+    try await store.addProject(name: name, clientId: client, status: status, currency: "GBP", budget: 0,
+                               budgetUnits: .hours, hoursPerDay: 8, normalBillingRate: 0, billingPeriod: .hour,
+                               usesProjectInvoiceSequence: false, contractPoReference: nil, startsOn: nil, endsOn: nil).id
+}
+
+@MainActor
+func makeTask(_ store: FreeAgentDataStore, _ name: String, in project: String = "\(U)/projects/1") async throws -> String {
+    try await store.addTask(name: name, projectId: project, clientId: "\(U)/contacts/1", isBillable: true,
+                            status: .active, billingRate: nil, billingPeriod: nil).id
+}
+
+/// A client, project or task as the scenarios below make it: by name, as its form would, under
+/// Acme's Site project where it needs a parent.
+struct Creatable {
+    let noun: String
+    let kind: ResourceServer.Kind
+    let resource: DataStoreError.Resource
+    /// A record FreeAgent might hold under `name`, where `create` would put one.
+    let record: (String) -> [String: Any]
+    /// Makes one named `name` and returns its id.
+    let create: @MainActor (FreeAgentDataStore, String) async throws -> String
+    /// The ids of every one the store has cached.
+    let cached: @MainActor (FreeAgentDataStore) -> [String]
+    /// Adds a project to a client, or a task to a project, and returns its id.
+    let addChild: (@MainActor (FreeAgentDataStore, _ parent: String) async throws -> String)?
+}
+
+let projectIds: @MainActor (FreeAgentDataStore) -> [String] = { $0.clients.flatMap(\.projects).map(\.id) }
+let taskIds: @MainActor (FreeAgentDataStore) -> [String] = { $0.clients.flatMap(\.projects).flatMap(\.tasks).map(\.id) }
+
+let creatables = [
+    Creatable(noun: "client", kind: .contacts, resource: .client, record: { ["organisation_name": $0] },
+              create: makeClient, cached: { $0.clients.map(\.id) },
+              addChild: { store, client in try await makeProject(store, "Kappa", for: client) }),
+    Creatable(noun: "project", kind: .projects, resource: .project, record: projectRecord,
+              create: { try await makeProject($0, $1) }, cached: projectIds,
+              addChild: { store, project in try await makeTask(store, "Kappa", in: project) }),
+    Creatable(noun: "task", kind: .tasks, resource: .task, record: taskRecord,
+              create: { try await makeTask($0, $1) }, cached: taskIds, addChild: nil),
+]
+
+@MainActor
+func resourceStore() -> (ResourceServer, FreeAgentDataStore, KeychainTokenStore) {
+    let stub = Stub()
+    baseRules(stub)
+    let server = ResourceServer(inner: stub)
+    let (store, ts) = makeStore(server)
+    return (server, store, ts)
+}
+
+@MainActor func s30() async throws {
+    hdr(30, "A client, project or task whose create response is lost must be adopted, not made twice")
+    for made in creatables {
+        let (server, store, ts) = resourceStore(); defer { ts.clear() }
+        try await store.refresh()
+        let before = server.ids(made.kind).count
+
+        server.createFault = .loseResponse
+        do {
+            let id = try await made.create(store, "Gamma")
+            if server.ids(made.kind).count == before + 1, server.ids(made.kind).last == id,
+               made.cached(store).filter({ $0 == id }).count == 1 {
+                ok("a lost \(made.noun) is found and adopted at once")
+            } else {
+                bad("adopted \(id) with \(server.ids(made.kind)) server-side and \(made.cached(store)) cached")
+            }
+        } catch {
+            bad("the lost \(made.noun) surfaced as \(error), so retrying it would make a second")
+        }
+
+        // Applied, then the network stays down, so nothing can be checked until it is back.
+        server.createFault = .none
+        server.offlineAfterCreate = true
+        do { _ = try await made.create(store, "Delta"); bad("an unchecked \(made.noun) was reported as made") }
+        catch let error as DataStoreError where error == .unconfirmed(made.resource) { ok("an uncheckable \(made.noun) is reported unconfirmed") }
+        catch { bad("an uncheckable \(made.noun) is reported as \(error), which reads as not made and invites a blind retry") }
+        server.offlineAfterCreate = false
+        let posts = server.posts[made.kind]
+        _ = try? await made.create(store, "Delta")
+        if server.posts[made.kind] == posts { ok("a retry while still offline posts nothing") }
+        else { bad("a retry while offline posted again") }
+
+        // Back online, a refresh shows what the lost create made, and something is added to it
+        // before the retry, whose name is retyped with a stray space.
+        server.offline = false
+        try await store.refresh()
+        let child = try await made.addChild?(store, server.ids(made.kind).last!)
+        do {
+            let id = try await made.create(store, "Delta ")
+            print("   \(made.noun) retried online: server holds \(server.ids(made.kind)); returned \(id)")
+            if server.posts[made.kind] == posts, server.ids(made.kind).count == before + 2, server.ids(made.kind).last == id {
+                ok("the retry adopts what the lost create made rather than posting it again")
+            } else {
+                bad("the retry left \(server.ids(made.kind).count - before) new server-side")
+            }
+            if made.cached(store).filter({ $0 == id }).count == 1 { ok("and the local cache holds it once") }
+            else { bad("the local cache holds \(made.cached(store))") }
+            if let child {
+                if (projectIds(store) + taskIds(store)).contains(child) { ok("with what was added to it") }
+                else { bad("adopting it dropped \(child) from the local cache") }
+            }
+        } catch {
+            bad("the retry failed: \(error)")
+        }
+    }
+
+    // Lost before the first refresh has named the account, as when the launch refresh failed.
+    let (server, store, ts) = resourceStore(); defer { ts.clear() }
+    server.offlineAfterCreate = true
+    _ = try? await makeClient(store, "Omega")
+    server.offlineAfterCreate = false
+    server.offline = false
+    try await store.refresh()
+    let posts = server.posts[.contacts]
+    do {
+        let id = try await makeClient(store, "Omega")
+        if server.posts[.contacts] == posts, server.ids(.contacts).last == id { ok("so is a client lost before the first refresh, by a retry after it") }
+        else { bad("a client lost before the first refresh was posted again by its retry: \(server.ids(.contacts))") }
+    } catch {
+        bad("a retry after the first refresh failed: \(error)")
+    }
+
+    // Made Hidden, which the projects list may leave out by default, then retried as Active.
+    server.offlineAfterCreate = true
+    _ = try? await makeProject(store, "Archive", status: .hidden)
+    server.offlineAfterCreate = false
+    server.offline = false
+    let projectPosts = server.posts[.projects]
+    do {
+        let id = try await makeProject(store, "Archive")
+        if server.posts[.projects] == projectPosts, server.ids(.projects).last == id { ok("so is a project made Hidden, by a retry made Active") }
+        else { bad("a project made Hidden was posted again by a retry made Active: \(server.ids(.projects))") }
+    } catch {
+        bad("a retry made Active failed: \(error)")
+    }
+
+    // An organisation, retried without the contact person it was first sent with.
+    server.offlineAfterCreate = true
+    _ = try? await store.addClient(organisationName: "Theta", firstName: "Jane", lastName: "Doe", email: nil,
+                                   phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil)
+    server.offlineAfterCreate = false
+    server.offline = false
+    let clientPosts = server.posts[.contacts]
+    do {
+        let id = try await makeClient(store, "Theta")
+        if server.posts[.contacts] == clientPosts, server.ids(.contacts).last == id { ok("and an organisation, by a retry without its contact person") }
+        else { bad("an organisation was posted again by a retry without its contact person: \(server.ids(.contacts))") }
+    } catch {
+        bad("a retry without the contact person failed: \(error)")
+    }
+
+    // A status view FreeAgent refuses says nothing about the project; one it rate-limits might
+    // have listed it.
+    server.createFault = .loseResponse
+    server.projectViewStatus = 422
+    do {
+        let id = try await makeProject(store, "Lambda")
+        if server.ids(.projects).last == id { ok("a status view FreeAgent refuses doesn't stop the look") }
+        else { bad("with the status views refused, adopted \(id), not \(server.ids(.projects).last ?? "nothing")") }
+    } catch {
+        bad("with the status views refused, the lost project surfaced as \(error)")
+    }
+    server.projectViewStatus = 429
+    do { _ = try await makeProject(store, "Mu"); bad("a lost project was reported as made with its status views unanswered") }
+    catch let error as DataStoreError where error == .unconfirmed(.project) { ok("but one left unanswered leaves the create unconfirmed") }
+    catch { bad("with a status view unanswered, the lost project surfaced as \(error)") }
+    server.createFault = .none
+    server.projectViewStatus = nil
+}
+
+@MainActor func s31() async throws {
+    hdr(31, "A client, project or task create must not adopt a same-name one that existed before it was sent")
+    for made in creatables {
+        let (server, store, ts) = resourceStore(); defer { ts.clear() }
+        // Made a minute before the send, so its `created_at` alone can't rule it out, but cached.
+        let recent = server.add(made.kind, made.record("Beta"), createdAt: Date().addingTimeInterval(-60))
+        try await store.refresh()
+        // Made an hour ago and edited just now, so it isn't cached, and a contacts lookup's
+        // `updated_since` still lists it.
+        let old = server.add(made.kind, made.record("Beta"), createdAt: Date().addingTimeInterval(-3600), updatedAt: Date())
+
+        server.createFault = .neverArrives
+        do {
+            let id = try await made.create(store, "Beta")
+            bad("adopted \(id == recent ? "the cached" : id == old ? "the hour-old" : "an unknown") \(made.noun) for one never made")
+        } catch let error as DataStoreError where error == .unconfirmed(made.resource) {
+            ok("neither earlier \(made.noun) is taken for the one that never arrived")
+        } catch {
+            bad("a \(made.noun) that never arrived is reported as \(error), which reads as not made")
+        }
+
+        server.createFault = .none
+        do {
+            let id = try await made.create(store, "Beta")
+            if ![recent, old].contains(id), server.ids(made.kind).last == id { ok("its retry makes a \(made.noun) of its own") }
+            else { bad("its retry returned \(id) with \(server.ids(made.kind)) server-side") }
+        } catch {
+            bad("its retry failed: \(error)")
+        }
+    }
+}
+
+@MainActor func s32() async throws {
+    hdr(32, "A refused client, project or task create must be reported as refused, not unconfirmed")
+    for made in creatables {
+        let (server, store, ts) = resourceStore(); defer { ts.clear() }
+        try await store.refresh()
+        let before = server.ids(made.kind).count
+
+        server.createFault = .refused
+        do {
+            _ = try await made.create(store, "Epsilon")
+            bad("a refused \(made.noun) was reported as made")
+        } catch FreeAgentError.apiError(status: 422, _) {
+            ok("a 422 is reported as FreeAgent's refusal")
+        } catch {
+            bad("a 422 is reported as \(error), not as FreeAgent's refusal")
+        }
+        if server.lookups[made.kind] == nil { ok("and nothing is looked for") }
+        else { bad("looked for a \(made.noun) FreeAgent said it didn't make") }
+
+        // A gateway answering 503 can't say whether FreeAgent went on to make it.
+        server.createFault = .unavailable
+        do { _ = try await made.create(store, "Epsilon"); bad("a 503 was reported as made") }
+        catch let error as DataStoreError where error == .unconfirmed(made.resource) { ok("a 503 is reported unconfirmed") }
+        catch { bad("a 503 is reported as \(error), which reads as not made") }
+
+        server.createFault = .none
+        do {
+            let id = try await made.create(store, "Epsilon")
+            if server.ids(made.kind).count == before + 1, server.ids(made.kind).last == id { ok("its retry makes the \(made.noun) once") }
+            else { bad("its retry left \(server.ids(made.kind).count - before) new server-side") }
+        } catch {
+            bad("its retry failed: \(error)")
+        }
+    }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -1263,6 +1636,9 @@ Task { @MainActor in
         if want(27) { try await s27() }
         if want(28) { try await s28() }
         if want(29) { try await s29() }
+        if want(30) { try await s30() }
+        if want(31) { try await s31() }
+        if want(32) { try await s32() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)

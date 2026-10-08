@@ -838,7 +838,7 @@ final class FreeAgentDataStoreTests: XCTestCase {
             _ = try await logAnHourAndTwenty(store)
             XCTFail("expected an error while offline")
         } catch let error as DataStoreError {
-            XCTAssertEqual(error, .unconfirmed, "a plain network error invites a blind retry")
+            XCTAssertEqual(error, .unconfirmed(.timeslip), "a plain network error invites a blind retry")
         }
         XCTAssertTrue(store.timeslips.isEmpty)
 
@@ -883,7 +883,7 @@ final class FreeAgentDataStoreTests: XCTestCase {
             _ = try await logAnHourAndTwenty(store)
             XCTFail("an hour-old entry was adopted as this request's result")
         } catch let error as DataStoreError {
-            XCTAssertEqual(error, .unconfirmed, "the outcome is still unknown")
+            XCTAssertEqual(error, .unconfirmed(.timeslip), "the outcome is still unknown")
         }
         XCTAssertTrue(store.timeslips.isEmpty)
     }
@@ -907,5 +907,96 @@ final class FreeAgentDataStoreTests: XCTestCase {
             XCTAssertEqual(error.description, "Hours is invalid")
         }
         XCTAssertEqual(transport.calls.count, 1, "nothing but the refused POST")
+    }
+
+    // MARK: - Client, project and task creates whose response is lost
+
+    private static let api = "https://api.sandbox.freeagent.com/v2"
+
+    /// An account holding Acme's Site project, whose creates all lose their response, and `lookup`
+    /// the list a lost one is settled by.
+    private static func losingCreates(lookup: (match: String, body: String)) -> StubTransport {
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"\#(api)/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            // Before the refresh's lists, whose URLs the lookups' also contain.
+            (match: lookup.match, status: 200, body: Data(lookup.body.utf8)),
+            (match: "contacts?", status: 200, body: Data(#"{"contacts":[{"url":"\#(api)/contacts/1","organisation_name":"Acme"}]}"#.utf8)),
+            (match: "projects?", status: 200, body: Data(#"{"projects":[\#(project(1, contact: 1, "Site", createdAt: -86_400))]}"#.utf8)),
+            (match: "tasks?", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+        ]
+        transport.failure = { $0.httpMethod == "POST" ? URLError(.networkConnectionLost) : nil }
+        return transport
+    }
+
+    /// `createdAt` is seconds from now.
+    private static func stamp(_ createdAt: TimeInterval) -> String {
+        ISO8601DateFormatter().string(from: Date(timeIntervalSinceNow: createdAt))
+    }
+
+    private static func project(_ id: Int, contact: Int, _ name: String, createdAt: TimeInterval) -> String {
+        #"{"url":"\#(api)/projects/\#(id)","contact":"\#(api)/contacts/\#(contact)","name":"\#(name)","status":"Active","currency":"GBP","budget":"0","created_at":"\#(stamp(createdAt))"}"#
+    }
+
+    private static func task(_ id: Int, project: Int, _ name: String, createdAt: TimeInterval) -> String {
+        #"{"url":"\#(api)/tasks/\#(id)","project":"\#(api)/projects/\#(project)","name":"\#(name)","is_billable":true,"status":"Active","created_at":"\#(stamp(createdAt))"}"#
+    }
+
+    func test_addClient_adoptsAPersonWhoseAbsentOrganisationIsListedAsEmpty() async throws {
+        let transport = Self.losingCreates(lookup: (
+            "updated_since",
+            #"{"contacts":[{"url":"\#(Self.api)/contacts/9","organisation_name":"","first_name":"Jane","last_name":"Doe","created_at":"\#(Self.stamp(0))","updated_at":"\#(Self.stamp(0))"}]}"#
+        ))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+
+        let client = try await store.addClient(
+            organisationName: nil, firstName: "Jane", lastName: "Doe",
+            email: nil, phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil
+        )
+
+        XCTAssertEqual(client.id, "\(Self.api)/contacts/9")
+        XCTAssertEqual(store.clients.map(\.id), ["\(Self.api)/contacts/1", "\(Self.api)/contacts/9"])
+    }
+
+    func test_addProject_adoptsOnlyASameNameProjectUnderItsOwnClient() async throws {
+        // The lookup asks for this client's projects, but must not rely on FreeAgent to have
+        // filtered by it. The other client's is the earlier, so only that check rules it out.
+        let transport = Self.losingCreates(lookup: (
+            "projects?contact=",
+            #"{"projects":[\#(Self.project(8, contact: 2, "Website", createdAt: -10)),\#(Self.project(9, contact: 1, "Website", createdAt: 0))]}"#
+        ))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+
+        let project = try await store.addProject(
+            name: "Website", clientId: "\(Self.api)/contacts/1", status: .active, currency: "GBP",
+            budget: 0, budgetUnits: .hours, hoursPerDay: 8, normalBillingRate: 0, billingPeriod: .hour,
+            usesProjectInvoiceSequence: false, contractPoReference: nil, startsOn: nil, endsOn: nil
+        )
+
+        XCTAssertEqual(project.id, "\(Self.api)/projects/9")
+    }
+
+    func test_addTask_adoptsOnlyASameNameTaskUnderItsOwnProject() async throws {
+        // As for projects: the other project's task is the earlier.
+        let transport = Self.losingCreates(lookup: (
+            "tasks?project=",
+            #"{"tasks":[\#(Self.task(8, project: 2, "Design", createdAt: -10)),\#(Self.task(9, project: 1, "Design", createdAt: 0))]}"#
+        ))
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+
+        let task = try await store.addTask(
+            name: "Design", projectId: "\(Self.api)/projects/1", clientId: "\(Self.api)/contacts/1",
+            isBillable: true, status: .active, billingRate: nil, billingPeriod: nil
+        )
+
+        XCTAssertEqual(task.id, "\(Self.api)/tasks/9")
     }
 }

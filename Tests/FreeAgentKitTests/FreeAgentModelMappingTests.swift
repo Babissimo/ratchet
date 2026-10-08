@@ -9,7 +9,7 @@ final class FreeAgentModelMappingTests: XCTestCase {
             url: "https://api.sandbox.freeagent.com/v2/contacts/1",
             organisationName: "Acme Ltd",
             firstName: "Jane", lastName: "Doe",
-            email: nil, phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil
+            email: nil, phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil, createdAt: nil
         )
         let client = dto.toRatchetClient(projects: [])
         XCTAssertEqual(client.name, "Acme Ltd")
@@ -21,7 +21,7 @@ final class FreeAgentModelMappingTests: XCTestCase {
             url: "https://api.sandbox.freeagent.com/v2/contacts/2",
             organisationName: nil,
             firstName: "Jane", lastName: "Doe",
-            email: nil, phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil
+            email: nil, phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil, createdAt: nil
         )
         XCTAssertEqual(dto.toRatchetClient(projects: []).name, "Jane Doe")
     }
@@ -36,7 +36,7 @@ final class FreeAgentModelMappingTests: XCTestCase {
             budget: "1000.0", budgetUnits: "Hours",
             hoursPerDay: "8.0", normalBillingRate: "50.0", billingPeriod: "hour",
             usesProjectInvoiceSequence: false, contractPoReference: nil,
-            startsOn: "2026-01-01", endsOn: nil
+            startsOn: "2026-01-01", endsOn: nil, createdAt: nil
         )
         let project = dto.toRatchetProject(tasks: [])
         XCTAssertEqual(project.status, .active)
@@ -101,7 +101,8 @@ final class FreeAgentModelMappingTests: XCTestCase {
             isBillable: true,
             status: "Active",
             billingRate: "75.0",
-            billingPeriod: "hour"
+            billingPeriod: "hour",
+            createdAt: nil
         )
         let task = dto.toRatchetTask()
         XCTAssertEqual(task.billingRate, 75.0)

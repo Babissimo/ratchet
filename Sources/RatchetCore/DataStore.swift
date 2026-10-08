@@ -34,6 +34,9 @@ public protocol DataStore: AnyObject {
     /// must go through this instead.
     func runningTimeslip() async throws -> RatchetTimeslip?
 
+    /// Throws `DataStoreError.unconfirmed(.task)` when it can't tell whether FreeAgent made the
+    /// task. Asked again for the same name in the same project, it returns the task that attempt
+    /// made, if it finds one, rather than making a second.
     func addTask(
         name: String,
         projectId: String,
@@ -49,6 +52,10 @@ public protocol DataStore: AnyObject {
     /// into an `organisation_name` made every individual client show up as a company on invoices
     /// with its name fields empty. Validation ("an organisation name, OR both first and last")
     /// still happens at the form; the store just needs the pieces.
+    ///
+    /// Throws `DataStoreError.unconfirmed(.client)` as `addTask` does for a task, and a call with
+    /// the same organisation, or for a person the same first and last name, settles it the same
+    /// way.
     func addClient(
         organisationName: String?,
         firstName: String?,
@@ -61,6 +68,8 @@ public protocol DataStore: AnyObject {
         country: String?
     ) async throws -> RatchetClient
 
+    /// Throws `DataStoreError.unconfirmed(.project)` as `addTask` does for a task, and a call with
+    /// the same name for the same client settles it the same way.
     func addProject(
         name: String,
         clientId: String,
@@ -77,9 +86,9 @@ public protocol DataStore: AnyObject {
         endsOn: Date?
     ) async throws -> RatchetProject
 
-    /// Throws `DataStoreError.unconfirmed` when it can't tell whether FreeAgent logged the entry,
-    /// and `DataStoreError.alreadyLogged` when a later identical call finds that it did; the entry
-    /// is then in `timeslips`.
+    /// Throws `DataStoreError.unconfirmed(.timeslip)` when it can't tell whether FreeAgent logged
+    /// the entry, and `DataStoreError.alreadyLogged` when a later identical call finds that it
+    /// did; the entry is then in `timeslips`.
     func logTime(
         taskId: String,
         projectId: String,
