@@ -186,8 +186,8 @@ public final class StatusItemController {
                     // another. Stop+restart was the first implementation, but it split what the
                     // user experiences as one continuous stretch of work into two timeslips.
                     //
-                    // Read from the server, not from `currentRunningTimeslip`: FreeAgent's
-                    // timeslip PUT takes the complete record, so the hours and day sent here are
+                    // Read from the server, not from `currentRunningTimeslip`: `updateTimeslip`
+                    // sends the complete record, so the hours and day sent here are
                     // *asserted*, not merged. Sending the cache's values overwrote anything the
                     // server had accrued since the last refresh — a pause and resume from the
                     // web app silently lost the hours in between.

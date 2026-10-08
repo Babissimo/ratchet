@@ -7,7 +7,8 @@
 // keeping the last task across a restart, and a local write forcing the next refresh); 16-19
 // cover the "Start tracking …" offer itself (following history, yielding to a running timer,
 // and dropping a task, project or client that has gone); 20-23 cover a "Log past time" create
-// whose response is lost, which a retry must not log twice. Each drives the real `FreeAgentDataStore`
+// whose response is lost, which a retry must not log twice; 24 covers an edit that clears an
+// entry's comment, which FreeAgent must be told about. Each drives the real `FreeAgentDataStore`
 // against a scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a
 // regression. Exits non-zero if any scenario fails.
 //
@@ -16,7 +17,7 @@
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all twenty-three
+//     swift run Antagonise          # all twenty-four
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -767,7 +768,8 @@ final class FakeMostRecentStore: MostRecentTaskStore {
 
 /// FreeAgent's timeslip store in miniature, for scenarios where a create has to land server-side
 /// before anything goes wrong: `POST /timeslips` is applied first, then faults are injected, and
-/// timeslip lists are answered from what was applied. Everything else falls through to `inner`.
+/// timeslip lists are answered from what was applied. A `PUT` to an entry it holds is merged into
+/// it. Everything else falls through to `inner`.
 @MainActor
 final class TimeslipServer: FreeAgentTransport {
     enum CreateFault { case none, loseResponse, neverArrives, cannotConnect }
@@ -780,6 +782,8 @@ final class TimeslipServer: FreeAgentTransport {
     var offlineAfterCreate = false
     var offline = false
     private(set) var slips: [[String: Any]] = []
+    /// The `timeslip` object of every update applied, as sent.
+    private(set) var puts: [[String: Any]] = []
     /// Every create sent, whether or not it arrived.
     private(set) var posts = 0
     private(set) var lookups = 0
@@ -797,6 +801,14 @@ final class TimeslipServer: FreeAgentTransport {
         let isTimeslips = url.path.hasSuffix("/v2/timeslips")
         if isTimeslips, request.httpMethod == "POST" { posts += 1; lookupsAtCreate.append(lookups) }
         if offline { throw URLError(.notConnectedToInternet) }
+        if request.httpMethod == "PUT", let index = ids.firstIndex(of: url.absoluteString) {
+            let envelope = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: [String: Any]]
+            let sent = envelope?["timeslip"] ?? [:]
+            puts.append(sent)
+            // FreeAgent changes only the attributes a PUT carries; an omitted one keeps its value.
+            slips[index].merge(sent) { _, new in new }
+            return try respond(request, ["timeslip": slips[index]], status: 200)
+        }
         guard isTimeslips else { return nil }
         if request.httpMethod == "POST" {
             let createFault = createFaults.isEmpty ? createFault : createFaults.removeFirst()
@@ -975,6 +987,30 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     else { bad("the second ended \(secondResult) with \(server.ids) server-side") }
 }
 
+@MainActor func s24() async throws {
+    hdr(24, "Clearing an entry's comment must clear it in FreeAgent")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    let (store, ts) = makeStore(server); defer { ts.clear() }
+    try await store.refresh()
+    let logged = try await logTask1(store)
+
+    // What the edit form passes once its comment field has been emptied.
+    let edited = try await store.updateTimeslip(id: logged.id, taskId: logged.taskId, projectId: logged.projectId,
+                                                clientId: logged.clientId, date: logged.day, hours: logged.hours,
+                                                comment: TaskNameValidator.validate(""))
+    func shown(_ value: Any?) -> String { value.map { $0 is String ? "\"\($0)\"" : "\($0)" } ?? "<absent>" }
+    let sent = server.puts.last?["comment"]
+    print("   PUT comment: \(shown(sent)); FreeAgent then holds \(shown(server.slips[0]["comment"]))")
+    if sent as? String == "" { ok("the PUT carries the cleared comment") }
+    else { bad("the PUT carries comment \(shown(sent)), so FreeAgent keeps the old one") }
+    if (server.slips[0]["comment"] as? String).flatMap(TaskNameValidator.validate) == nil { ok("the comment is gone in FreeAgent") }
+    else { bad("FreeAgent still holds the comment") }
+    if edited.comment.flatMap(TaskNameValidator.validate) == nil { ok("and from the local cache") }
+    else { bad("the local cache still shows \(edited.comment!)") }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -1004,6 +1040,7 @@ Task { @MainActor in
         if want(21) { try await s21() }
         if want(22) { try await s22() }
         if want(23) { try await s23() }
+        if want(24) { try await s24() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)

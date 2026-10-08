@@ -90,10 +90,10 @@ public protocol DataStore: AnyObject {
     ) async throws -> RatchetTimeslip
 
     /// Edits an already-logged entry in place — the counterpart to `logTime`'s "create". `id`
-    /// identifies the timeslip being changed; the rest are its full replacement values (FreeAgent's
-    /// timeslip PUT takes the complete record, not a partial patch), including which client/
-    /// project/task it's now booked against, so "Recent time entries" can reassign a mis-logged
-    /// entry rather than only tweaking its hours/comment.
+    /// identifies the timeslip being changed; the rest are its full replacement values, a nil
+    /// `comment` meaning it has none, including which client/project/task it's now booked
+    /// against, so "Recent time entries" can reassign a mis-logged entry rather than only
+    /// tweaking its hours/comment.
     func updateTimeslip(
         id: String,
         taskId: String,

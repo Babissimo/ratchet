@@ -507,13 +507,13 @@ public final class FreeAgentDataStore: DataStore {
     ) async throws -> RatchetTimeslip {
         try await withMutation {
             let userURL = try requireUserURL()
-            // FreeAgent's timeslip PUT takes the full record, not a partial patch, so reassigning
-            // the task means resending project/task too.
+            // FreeAgent's timeslip PUT keeps any attribute it isn't sent, so a cleared comment
+            // goes as "" rather than being left out.
             let updated: FreeAgentTimeslipDTO = try await apiClient.put(
                 id, envelopeKey: "timeslip",
                 body: TimeslipBody(
                     project: projectId, task: taskId, user: userURL,
-                    dated_on: dateString(date), hours: String(hours), comment: comment
+                    dated_on: dateString(date), hours: String(hours), comment: comment ?? ""
                 )
             )
             let resolved = resolvedTimeslip(updated, clientId: clientId)
