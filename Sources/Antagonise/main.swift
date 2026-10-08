@@ -9,17 +9,19 @@
 // and dropping a task, project or client that has gone); 20-23 cover a "Log past time" create
 // whose response is lost, which a retry must not log twice; 24 covers an edit that clears an
 // entry's comment, which FreeAgent must be told about; 25 and 26 cover the timer's start (a start
-// FreeAgent reports as not running, and an edit whose reply carries no timer); 27 covers a refresh
-// that begins while a start is in flight, which only the mutation epoch's exit edge catches. Each
-// drives the real `FreeAgentDataStore` against a scriptable stub transport and asserts the *fixed*
-// behaviour, so a `BUG` line means a regression. Exits non-zero if any scenario fails.
+// FreeAgent reports as not running, and an edit whose reply carries no timer); 27 and 28 cover the
+// mutation epoch's two edges (a refresh that begins while a start is in flight, which only the exit
+// edge catches, and one already in flight when a stop begins that lands before the stop finishes,
+// which only the entry edge catches). Each drives the real `FreeAgentDataStore` against a
+// scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a regression.
+// Exits non-zero if any scenario fails.
 //
 // This is an executable rather than an XCTest case because `swift test` cannot run on a machine
 // without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all twenty-seven
+//     swift run Antagonise          # all twenty-eight
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -56,28 +58,33 @@ final class Stub: FreeAgentTransport {
     }
 }
 
-/// Holds the first request matching `gateMatch` open until released, so a user action and a
-/// refresh can be interleaved. Gates stack, so two requests can each be held and released
-/// separately.
+/// Holds the first request matching `gateMatch` (and `gateMethod`) open until released, so a user
+/// action and a refresh can be interleaved. Gates stack, so two requests can each be held and
+/// released separately.
 @MainActor
 final class GatedStub: FreeAgentTransport {
     let inner: any FreeAgentTransport & Sendable
     let gateMatch: String
+    /// Limits the gate to one HTTP method (nil for any), for a `gateMatch` that is also part of
+    /// another request's URL, as a timeslip's URL is of its timer's.
+    let gateMethod: String?
     var armed = false
     private(set) var gateHit = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
-    init(inner: any FreeAgentTransport & Sendable, gateMatch: String) { self.inner = inner; self.gateMatch = gateMatch }
+    init(inner: any FreeAgentTransport & Sendable, gateMatch: String, gateMethod: String? = nil) {
+        self.inner = inner; self.gateMatch = gateMatch; self.gateMethod = gateMethod
+    }
 
     /// Registers the continuation synchronously on the main actor, so `release()` can never run
     /// before the waiter is recorded — that ordering hole deadlocks instead of failing.
-    private func waitIfGated(_ url: String) async {
-        guard armed, url.contains(gateMatch), !gateHit else { return }
+    private func waitIfGated(_ url: String, method: String?) async {
+        guard armed, url.contains(gateMatch), gateMethod == nil || gateMethod == method, !gateHit else { return }
         gateHit = true
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in waiting.append(c) }
     }
 
     nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        await waitIfGated(request.url!.absoluteString)
+        await waitIfGated(request.url!.absoluteString, method: request.httpMethod)
         return try await inner.send(request)
     }
 
@@ -1127,6 +1134,42 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     else { bad("the failed start left the cache looking fresh, so the next menu open skips refreshing") }
 }
 
+@MainActor func s28() async throws {
+    hdr(28, "A refresh already in flight when a stop begins must not commit over it mid-stop")
+    let stub = Stub()
+    let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
+    baseRules(stub, running: running, recent: "[\(running)]")
+    stub.setRule("timeslips/9", body: #"{"timeslip":\#(slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil))}"#)
+    // `stopTimer` clears the running timer once its DELETE lands, then suspends on this read-back.
+    let readBackGate = GatedStub(inner: stub, gateMatch: "timeslips/9", gateMethod: "GET")
+    // `contacts` is fetched only by a refresh.
+    let refreshGate = GatedStub(inner: readBackGate, gateMatch: "contacts?")
+    let (store, ts) = makeStore(refreshGate); defer { ts.clear() }
+    try await store.refresh()
+    let setUpAt = store.lastRefreshedAt
+
+    // The refresh snapshots the epoch before the stop's entry edge and reaches its commit while the
+    // stop waits on its read-back, so only the entry edge has moved by then. Scenario 27 is the exit
+    // edge's counterpart.
+    refreshGate.armed = true
+    let refresh = Task { @MainActor in try await store.refresh() }
+    guard await awaitGate(refreshGate) else { bad("refresh gate never fired"); return }
+    readBackGate.armed = true
+    let stop = Task { @MainActor in try await store.stopTimer() }
+    guard await awaitGate(readBackGate) else { bad("read-back gate never fired"); return }
+    // The stub tells the refresh the timer is running, as FreeAgent would before the DELETE lands.
+    refreshGate.release()
+    if case .failure(let error) = await refresh.result {
+        bad("the refresh threw, so the epoch guard went untested: \(error)"); return
+    }
+    if store.lastRefreshedAt == setUpAt { ok("the refresh that landed mid-stop was discarded") }
+    else { bad("the refresh that landed mid-stop was taken as current") }
+    readBackGate.release()
+    if case .failure(let error) = await stop.result { bad("the stop failed, so the race went untested: \(error)"); return }
+    if store.currentRunningTimeslip == nil { ok("and the timer stays stopped") }
+    else { bad("the refresh put back the timer just stopped: running=\(store.currentRunningTimeslip!.id)") }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -1160,6 +1203,7 @@ Task { @MainActor in
         if want(25) { try await s25() }
         if want(26) { try await s26() }
         if want(27) { try await s27() }
+        if want(28) { try await s28() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)
