@@ -8,6 +8,7 @@ import AppKit
 @MainActor
 final class StatusItemControllerTests: XCTestCase {
     private var controller: StatusItemController?
+    private var presentedAlerts: [String] = []
 
     override func tearDown() {
         // tearDown() is nonisolated (inherited from XCTestCase), but this class is @MainActor —
@@ -24,8 +25,7 @@ final class StatusItemControllerTests: XCTestCase {
     func test_construction_setsInitialMenuOnStatusItem() {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
 
         XCTAssertNotNil(controller.statusItemForTesting.menu)
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
@@ -34,8 +34,7 @@ final class StatusItemControllerTests: XCTestCase {
     func test_stateChange_rebuildsMenu() {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
 
         appState.logIn()
 
@@ -45,8 +44,7 @@ final class StatusItemControllerTests: XCTestCase {
     func test_tooltip_loggedOut_isNil() {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
 
         XCTAssertNil(controller.statusItemForTesting.button?.toolTip)
     }
@@ -54,8 +52,7 @@ final class StatusItemControllerTests: XCTestCase {
     func test_tooltip_idle_showsIdle() {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
 
         appState.logIn()
 
@@ -67,8 +64,7 @@ final class StatusItemControllerTests: XCTestCase {
         let now = startedAt.addingTimeInterval(90) // 1 minute 30 seconds in
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore, now: { now })
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore, now: { now })
 
         appState.logIn()
         let task = TrackedTaskRef(
@@ -96,8 +92,7 @@ final class StatusItemControllerTests: XCTestCase {
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
             day: booked, timerStartedAt: startedAt, hours: 0
         )], runningId: "timeslip-1")
-        let controller = StatusItemController(appState: appState, dataStore: dataStore, now: { now })
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore, now: { now })
         appState.logIn()
         appState.startTracking(TrackedTaskRef(
             clientId: "client-1", clientName: "Acme",
@@ -126,10 +121,9 @@ final class StatusItemControllerTests: XCTestCase {
             id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
             day: yesterday, timerStartedAt: startedAt, hours: 0
         )], runningId: "timeslip-1")
-        let controller = StatusItemController(
+        let controller = makeController(
             appState: appState, dataStore: dataStore, now: { today.addingTimeInterval(9 * 3600) }
         )
-        self.controller = controller
         appState.logIn()
         appState.startTracking(TrackedTaskRef(
             clientId: "client-1", clientName: "Acme",
@@ -151,8 +145,7 @@ final class StatusItemControllerTests: XCTestCase {
     func test_menuWillOpen_refreshesWhenNeverRefreshed() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         appState.logIn()
 
         let menu = controller.statusItemForTesting.menu!
@@ -169,11 +162,7 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(dataStore.refreshCount, 1)
 
         let fixedNow = Date()
-        let controller = StatusItemController(
-            appState: appState, dataStore: dataStore,
-            now: { fixedNow }
-        )
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore, now: { fixedNow })
         appState.logIn()
 
         let menu = controller.statusItemForTesting.menu!
@@ -191,11 +180,7 @@ final class StatusItemControllerTests: XCTestCase {
 
         // 3 minutes after the refresh above — past the 2-minute threshold.
         let laterNow = dataStore.lastRefreshedAt!.addingTimeInterval(180)
-        let controller = StatusItemController(
-            appState: appState, dataStore: dataStore,
-            now: { laterNow }
-        )
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore, now: { laterNow })
         appState.logIn()
 
         let menu = controller.statusItemForTesting.menu!
@@ -209,18 +194,14 @@ final class StatusItemControllerTests: XCTestCase {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
         dataStore.refreshError = DataStoreError.notFound
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         appState.logIn()
 
         let menu = controller.statusItemForTesting.menu!
-        // Must not crash and must not present a modal alert (no way to assert "no alert shown"
-        // directly without blocking on NSAlert.runModal — the absence of a hang/crash here,
-        // combined with the menu still reflecting the logged-in idle screen below, is the
-        // signal that no alert was raised for this background failure).
         menu.delegate?.menuWillOpen?(menu)
         await drainMainActorQueue()
 
+        XCTAssertEqual(presentedAlerts, [])
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Start timer")
     }
 
@@ -228,22 +209,21 @@ final class StatusItemControllerTests: XCTestCase {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
         dataStore.refreshError = FakeSessionExpiredError()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         appState.logIn()
 
         let menu = controller.statusItemForTesting.menu!
         menu.delegate?.menuWillOpen?(menu)
         await drainMainActorQueue()
 
+        XCTAssertEqual(presentedAlerts, ["Signed out of FreeAgent"])
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
     }
 
     func test_menuWillOpen_whenLoggedOut_doesNotRefresh() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         // No appState.logIn() — dataStore.lastRefreshedAt is nil, which the staleness gate would
         // otherwise treat as "stale" and refresh anyway, throwing .unauthorized and triggering a
         // false "session expired" alert for someone who simply never logged in.
@@ -258,8 +238,7 @@ final class StatusItemControllerTests: XCTestCase {
     func test_systemWake_refreshesWhenStale() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         appState.logIn()
 
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
@@ -275,11 +254,7 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(dataStore.refreshCount, 1)
 
         let fixedNow = Date()
-        let controller = StatusItemController(
-            appState: appState, dataStore: dataStore,
-            now: { fixedNow }
-        )
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore, now: { fixedNow })
         appState.logIn()
 
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
@@ -292,15 +267,13 @@ final class StatusItemControllerTests: XCTestCase {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
         dataStore.refreshError = DataStoreError.notFound
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         appState.logIn()
 
-        // Must not crash and must not present a modal alert — same reasoning as
-        // test_menuWillOpen_refreshFailure_isSilent above.
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
         await drainMainActorQueue()
 
+        XCTAssertEqual(presentedAlerts, [])
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Start timer")
     }
 
@@ -308,14 +281,28 @@ final class StatusItemControllerTests: XCTestCase {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
         dataStore.refreshError = FakeSessionExpiredError()
-        let controller = StatusItemController(appState: appState, dataStore: dataStore)
-        self.controller = controller
+        let controller = makeController(appState: appState, dataStore: dataStore)
         appState.logIn()
 
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
         await drainMainActorQueue()
 
+        XCTAssertEqual(presentedAlerts, ["Signed out of FreeAgent"])
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
+    }
+
+    /// Builds the controller under test with the user stood in by `presentedAlerts`, which records
+    /// and dismisses each alert that `runModal()` would block on.
+    private func makeController(
+        appState: AppState, dataStore: DataStore, now: @escaping () -> Date = Date.init
+    ) -> StatusItemController {
+        let controller = StatusItemController(appState: appState, dataStore: dataStore, now: now)
+        controller.presentAlert = { [weak self] alert in
+            self?.presentedAlerts.append(alert.messageText)
+            return .alertFirstButtonReturn
+        }
+        self.controller = controller
+        return controller
     }
 
     /// Fire-and-forget `Task { @MainActor in ... }` work (like `silentlyRefreshIfStale()`) needs

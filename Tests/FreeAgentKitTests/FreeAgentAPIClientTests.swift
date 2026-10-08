@@ -97,7 +97,11 @@ final class FreeAgentAPIClientTests: XCTestCase {
         XCTAssertEqual(request.url, FreeAgentEnvironment.production.tokenURL)
         XCTAssertEqual(request.url?.host, "auth.ratchet.babissimo.net")
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "the app must not carry client credentials")
-        XCTAssertEqual(request.httpBody.map { String(decoding: $0, as: UTF8.self) }, "grant_type=authorization_code&code=c0de%2F%2B%3D&code_verifier=v3r1f13r~")
+        XCTAssertEqual(formFields(of: request), [
+            URLQueryItem(name: "grant_type", value: "authorization_code"),
+            URLQueryItem(name: "code", value: "c0de/+="),
+            URLQueryItem(name: "code_verifier", value: "v3r1f13r~"),
+        ])
     }
 
     func test_refreshTokens_sendsOnlyTheRefreshTokenToTheSignInService() async throws {
@@ -329,5 +333,18 @@ final class FreeAgentAPIClientTests: XCTestCase {
 
         XCTAssertEqual(result.at, ISO8601DateFormatter().date(from: "2026-08-12T15:51:37Z"))
         store.clear()
+    }
+
+    /// Decodes a form body the way the sign-in service's `URLSearchParams` does, so a test pins
+    /// the values it receives rather than one of the encodings that produce them (`/` may go out
+    /// literally or as `%2F`). `+` decodes to a space, which is what makes escaping it matter.
+    private func formFields(of request: URLRequest) -> [URLQueryItem] {
+        let body = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return body.split(separator: "&").map { pair in
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map {
+                $0.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String($0)
+            }
+            return URLQueryItem(name: parts[0], value: parts.count > 1 ? parts[1] : nil)
+        }
     }
 }

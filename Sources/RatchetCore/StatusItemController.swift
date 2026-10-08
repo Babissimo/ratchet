@@ -53,6 +53,15 @@ public final class StatusItemController {
     /// Invoked after a successful `appState.logOut()`, e.g. to clear stored credentials.
     public var onLogOut: (() -> Void)?
 
+    /// Every alert goes through here so tests can answer it: `runModal()` blocks until someone
+    /// clicks a button.
+    var presentAlert: @MainActor (NSAlert) -> NSApplication.ModalResponse = { alert in
+        // The app runs as .accessory and is not the active app when a status-bar item is
+        // clicked, so the alert can appear non-key/non-frontmost without this.
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal()
+    }
+
     public init(
         appState: AppState,
         dataStore: DataStore,
@@ -302,8 +311,7 @@ public final class StatusItemController {
             alert.informativeText = "Logging out won't stop the timer for \(task.taskName) — it will keep recording time in FreeAgent. Stop it first if that's not what you want."
             alert.addButton(withTitle: "Log Out Anyway")
             alert.addButton(withTitle: "Cancel")
-            NSApp.activate(ignoringOtherApps: true)
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard presentAlert(alert) == .alertFirstButtonReturn else { return }
         }
         performLogOut()
     }
@@ -329,8 +337,7 @@ public final class StatusItemController {
         alert.messageText = "Signed out of FreeAgent"
         alert.informativeText = "Your FreeAgent session has expired, so Ratchet signed you out. Choose \"Log in with browser\" to reconnect."
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 
     /// Without this, a successful login has no feedback of its own — the only sign anything
@@ -342,8 +349,7 @@ public final class StatusItemController {
         alert.messageText = "Signed in to FreeAgent"
         alert.informativeText = "Signed in as \(dataStore.accountEmail)."
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 
     /// A login attempt that never got as far as an established session failing is a different
@@ -354,8 +360,7 @@ public final class StatusItemController {
         alert.messageText = "Couldn't sign in to FreeAgent"
         alert.informativeText = "\(error)"
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 
     /// macOS requires explicit user approval in System Settings the first time an app registers
@@ -369,8 +374,7 @@ public final class StatusItemController {
         alert.informativeText = "macOS needs you to approve this in System Settings > General > Login Items before Ratchet will launch at login."
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Later")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn,
+        if presentAlert(alert) == .alertFirstButtonReturn,
            let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
             NSWorkspace.shared.open(url)
         }
@@ -394,8 +398,7 @@ public final class StatusItemController {
         alert.messageText = "Couldn't \(action)"
         alert.informativeText = "\(error)"
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 
     /// A create FreeAgent didn't confirm isn't titled as a failure, for the reason
@@ -412,8 +415,7 @@ public final class StatusItemController {
         alert.messageText = title
         alert.informativeText = text
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 
     /// Rebuilds the menu from the current `appState`/`dataStore` contents. Exposed for callers
@@ -898,10 +900,7 @@ public final class StatusItemController {
             guard TaskNameValidator.validate(nameField.stringValue) != nil else { return false }
             return Self.isValidOptionalBillingRate(billingRateField)
         }
-        // The app runs as .accessory and is not the active app when a status-bar item is
-        // clicked, so the alert can appear non-key/non-frontmost without this.
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
+        let response = presentAlert(alert)
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn, let name = TaskNameValidator.validate(nameField.stringValue) else { return }
 
@@ -1014,8 +1013,7 @@ public final class StatusItemController {
         let observers = liveValidate(button: logButton, fields: [durationField]) {
             DurationFormatter.parseHoursAndMinutes(durationField.stringValue) != nil
         }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
+        let response = presentAlert(alert)
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn else { return }
 
@@ -1092,8 +1090,7 @@ public final class StatusItemController {
             guard DurationFormatter.parseHoursAndMinutes(durationField.stringValue) != nil else { return false }
             return true
         }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
+        let response = presentAlert(alert)
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn, let name = TaskNameValidator.validate(nameField.stringValue) else { return }
 
@@ -1175,8 +1172,7 @@ public final class StatusItemController {
             alert.informativeText = "\(duration) logged for \(taskName) on \(dateText)."
         }
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 
     private static let confirmationDateFormatter: DateFormatter = {
@@ -1334,8 +1330,7 @@ public final class StatusItemController {
             selectionConfirmed = true
             saveButton?.isEnabled = isValid()
         }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
+        let response = presentAlert(alert)
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn else { return }
 
@@ -1452,8 +1447,7 @@ public final class StatusItemController {
             guard let email = TaskNameValidator.validate(emailField.stringValue) else { return true }
             return Self.isPlausibleEmail(email)
         }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
+        let response = presentAlert(alert)
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn else { return }
 
@@ -1589,8 +1583,7 @@ public final class StatusItemController {
             if let startsOn, let endsOn, endsOn < startsOn { return false }
             return true
         }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
+        let response = presentAlert(alert)
         endLiveValidate(observers)
         guard response == .alertFirstButtonReturn else { return }
 
@@ -1758,8 +1751,7 @@ public final class StatusItemController {
         alert.messageText = "Couldn't create that"
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = presentAlert(alert)
     }
 }
 

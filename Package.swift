@@ -13,9 +13,8 @@ let package = Package(
         // scripts/build-app.sh does) rather than pulling it into a plain `swift build`.
         .executableTarget(name: "IconExporter", dependencies: ["RatchetCore"]),
         // Dev-only regression harness for the local/remote state divergences fixed in
-        // cbcb28f..64853c6. It lives here rather than in Tests/ because `swift test` cannot run
-        // on a machine without Xcode (see CLAUDE.md) — as an executable it is the only
-        // *runnable* evidence those bugs stay fixed. Never shipped in the bundle.
+        // cbcb28f..64853c6. It lives here rather than in Tests/ so that it runs on a machine
+        // without Xcode, where `swift test` cannot (see CLAUDE.md). Never shipped in the bundle.
         .executableTarget(name: "Antagonise", dependencies: ["RatchetCore", "FreeAgentKit"]),
         .testTarget(name: "RatchetCoreTests", dependencies: ["RatchetCore"]),
         .testTarget(name: "FreeAgentKitTests", dependencies: ["FreeAgentKit"]),

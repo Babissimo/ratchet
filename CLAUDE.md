@@ -14,25 +14,31 @@ swift build
 `/Library/Developer/CommandLineTools`, and there is no `Xcode.app` and no entry in
 `/Library/Developer/Toolchains`. XCTest ships with Xcode, not with the Command Line Tools, so
 every test target fails to compile with `no such module 'XCTest'` before a single test runs.
+Installing Xcode and running `xcode-select -s /Applications/Xcode.app` restores it.
 
-Consequences to keep in mind:
+The suites run in CI instead. `.github/workflows/ci.yml` runs `swift build`, `swift test` and
+`swift run Antagonise` on a macOS runner, which has Xcode, for every PR against `main` and every
+push to it. A test written here is unrun until that job runs it, so push a branch, open a PR and
+read the result before saying it passes.
+
+Consequences to keep in mind locally:
 
 - `swift build` compiles the source targets but **not** the test targets, so a change that
-  breaks a test file's *compilation* passes `swift build` silently. This is not hypothetical:
-  `Tests/FreeAgentKitTests/FreeAgentAPIClientTests.swift` carried an unbalanced paren from
-  `2057c7c` until 2026-08-20, so that target had never compiled at all.
+  breaks a test file's *compilation* passes `swift build` silently, to be caught by the type-check
+  below or by CI.
 - After changing anything in `Sources/`, check test call sites rather than assuming the compiler
   will catch them — particularly signature changes on the `DataStore` protocol, whose
   implementations include `Tests/RatchetCoreTests/Support/FakeDataStore.swift`.
-- Tests written in this state are unrun code. Say so plainly rather than implying they pass.
+- A test that reaches an alert must replace `StatusItemController.presentAlert`. The default calls
+  `NSAlert.runModal()`, which waits for a click, so in CI the Test step hangs until its timeout.
 
-Two things partly close the gap, and both are worth running before claiming a change is good:
+Two things catch problems before CI does, and both are worth running before pushing:
 
 - **Type-check the test targets.** Build a minimal XCTest shim module, then
   `swiftc -typecheck -target x86_64-apple-macosx13.0` the test files against the debug
-  `-enable-testing` `.swiftmodule`s. That catches broken call sites even though nothing can run
-  the assertions.
-- **Run the state-divergence harness**, which *does* execute:
+  `-enable-testing` `.swiftmodule`s. That catches broken call sites, though not failing
+  assertions.
+- **Run the state-divergence harness**, which runs here as well as in CI:
 
   ```bash
   swift run Antagonise
@@ -43,8 +49,6 @@ Two things partly close the gap, and both are worth running before claiming a ch
   `cbcb28f..HEAD`. It exits non-zero on any regression. Run it after touching
   `FreeAgentDataStore`, `AppState`, or `AppState.reconcile(with:)`; see
   `Sources/Antagonise/main.swift` for what each scenario covers.
-
-Installing Xcode and running `xcode-select -s /Applications/Xcode.app` restores `swift test`.
 
 ## Sign-in and environments
 
