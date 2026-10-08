@@ -10,22 +10,25 @@
 // whose response is lost, which a retry must not log twice; 24 covers an edit that clears an
 // entry's comment, which FreeAgent must be told about; 25 and 26 cover the timer's start (a start
 // FreeAgent reports as not running, and an edit whose reply carries no timer); 27-29 cover a
-// refresh that overlaps a mutation (one that begins during a start and commits after it, which the
-// epoch's bump on exit catches, and one that commits during a stop, having begun before it or
-// during it, which the count of mutations in flight catches); 30-32 cover a new client, project or
-// task whose create response is lost, which a retry must adopt rather than make again without
-// taking an earlier one of the same name for it, and a create FreeAgent refuses, which must read
-// as refused; 33 covers a project or task FreeAgent makes after its parent has left the cache,
-// which must not read as a failure either. Each drives the real `FreeAgentDataStore` against a
-// scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a
-// regression. Exits non-zero if any scenario fails.
+// refresh that overlaps a mutation: it waits for one in flight before it fetches (27, 29), and is
+// discarded and fetched again if one begins before it commits, which the count of mutations in
+// flight catches (28), or the epoch's bump on exit if the mutation ends first (1, 2); 30-32 cover
+// a new client, project or task whose create response is lost, which a retry must adopt rather
+// than make again without taking an earlier one of the same name for it, and a create FreeAgent
+// refuses, which must read as refused; 33 covers a project or task FreeAgent makes after its
+// parent has left the cache, which must not read as a failure either; 34-36 cover callers that
+// rely on a refresh having committed whenever it returns (a start made before the launch refresh
+// lands, a login while the last session's stop is in flight, and a manual refresh that joins an
+// overtaken one). Each drives the real `FreeAgentDataStore` against a scriptable stub transport
+// and asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
+// scenario fails.
 //
 // This is an executable rather than an XCTest case because `swift test` cannot run on a machine
 // without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all thirty-three
+//     swift run Antagonise          # all thirty-six
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -62,9 +65,10 @@ final class Stub: FreeAgentTransport {
     }
 }
 
-/// Holds the first request matching `gateMatch` (and `gateMethod`) open until released, so a user
-/// action and a refresh can be interleaved. Gates stack, so two requests can each be held and
-/// released separately.
+/// Holds the reply to the first request matching `gateMatch` (and `gateMethod`) until released, so
+/// a user action and a refresh can be interleaved. The inner transport answers as the request is
+/// sent, so a held reply describes FreeAgent as it was then, whatever the scenario changes
+/// meanwhile. Gates stack, so two requests can each be held and released separately.
 @MainActor
 final class GatedStub: FreeAgentTransport {
     let inner: any FreeAgentTransport & Sendable
@@ -88,12 +92,27 @@ final class GatedStub: FreeAgentTransport {
     }
 
     nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let reply = try await inner.send(request)
         await waitIfGated(request.url!.absoluteString, method: request.httpMethod)
-        return try await inner.send(request)
+        return reply
     }
 
     func release() { let w = waiting; waiting = []; w.forEach { $0.resume() } }
 }
+
+/// Records how a task ended, so a scenario can check whether it has yet and give up on one that
+/// never does rather than hang on it.
+@MainActor
+final class Outcome<T: Sendable> {
+    private(set) var result: Result<T, Error>?
+    init(_ task: Task<T, Error>) { Task { @MainActor in self.result = await task.result } }
+    func ended() async -> Bool { await eventually { result != nil } }
+}
+
+/// Long enough for work that should be held back to have run, had it not been, before a scenario
+/// checks that it hasn't.
+@MainActor
+func settle() async { try? await Task.sleep(nanoseconds: 200_000_000) }
 
 @MainActor
 func awaitGate(_ gate: GatedStub) async -> Bool { await eventually { gate.gateHit } }
@@ -163,11 +182,12 @@ let acmeRef = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
     hdr(1, "User stops the timer while a silent refresh is in flight")
     let stub = Stub()
     let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
+    let stopped = slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil)
     baseRules(stub, running: running, recent: "[\(running)]")
     stub.setRule("timeslips/9/timer", body: "{}")
     // `stopTimer` re-reads the settled timeslip after the DELETE, to pick up the hours the
     // server finally recorded — see its comment.
-    stub.setRule("timeslips/9", body: #"{"timeslip":\#(slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil))}"#)
+    stub.setRule("timeslips/9", body: #"{"timeslip":\#(stopped)}"#)
     let gate = GatedStub(inner: stub, gateMatch: "view=running")
     let (store, ts) = makeStore(gate); defer { ts.clear() }
     try await store.refresh()
@@ -180,6 +200,9 @@ let acmeRef = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
     _ = try await store.stopTimer()
     app.stopTracking()
     print("   user stopped: running = \(store.currentRunningTimeslip?.id ?? "nil")")
+    // FreeAgent has the timer stopped now; only the held reply predates that.
+    stub.setRule("view=running", body: #"{"timeslips":[]}"#)
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(stopped)]}"#)
     gate.release()
     _ = await inFlight.value
     app.reconcile(with: store)
@@ -200,16 +223,47 @@ let acmeRef = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
     gate.armed = true
     let inFlight = Task { @MainActor in try? await store.refresh() }
     guard await awaitGate(gate) else { bad("gate never fired"); return }
+    let runningSlip = slip(id: 42, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z")
     stub.setRule("timeslips?", body: #"{"timeslips":[]}"#)
-    stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 42, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    stub.setRule("/timer", body: #"{"timeslip":\#(runningSlip)}"#)
     let started = try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
     app.startTracking(acmeRef, startedAt: started.timerStartedAt ?? Date())
     print("   user started: running = \(store.currentRunningTimeslip?.id ?? "nil")")
+    // FreeAgent has the timer running now; only the held reply predates that.
+    stub.setRule("view=running", body: #"{"timeslips":[\#(runningSlip)]}"#)
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(runningSlip)]}"#)
     gate.release()
     _ = await inFlight.value
     app.reconcile(with: store)
     if store.currentRunningTimeslip != nil, app.trackingTask != nil { ok("the start survived the concurrent refresh") }
     else { bad("in-flight refresh erased the just-started timer") }
+
+    // A start that throws may still have changed FreeAgent, so its exit counts as well.
+    let failing = Stub()
+    baseRules(failing, running: nil, recent: "[]")
+    let created = slip(id: 44, task: 1, hours: "0.0", datedOn: today(), timerStart: nil)
+    failing.setRule("v2/timeslips", body: #"{"timeslip":\#(created)}"#)
+    failing.setRule("/timer", body: "{}", status: 500)
+    let failingGate = GatedStub(inner: failing, gateMatch: "view=running")
+    let (failingStore, ts2) = makeStore(failingGate); defer { ts2.clear() }
+    try await failingStore.refresh()
+    let setUpAt = failingStore.lastRefreshedAt
+    failingGate.armed = true
+    let failingRefresh = Outcome(Task { @MainActor in try await failingStore.refresh() })
+    guard await awaitGate(failingGate) else { bad("gate never fired"); return }
+    do {
+        _ = try await failingStore.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+        bad("the start succeeded, so its failure path went untested"); return
+    } catch {}
+    // FreeAgent keeps the timeslip the start created before its timer failed.
+    failing.setRule("timeslips?", body: #"{"timeslips":[\#(created)]}"#)
+    failingGate.release()
+    guard await failingRefresh.ended() else { bad("the refresh never returned, so the failed start still counts as in flight"); return }
+    if case .failure(let error) = failingRefresh.result! { bad("the refresh threw: \(error)"); return }
+    let ids = failingStore.timeslips.map(\.id)
+    if ids == ["\(U)/timeslips/44"] { ok("and one in flight across a failed start commits what the start left") }
+    else if failingStore.lastRefreshedAt == setUpAt { bad("a refresh in flight across a failed start returned without committing") }
+    else { bad("a refresh in flight across a failed start committed what it heard before it: \(ids)") }
 }
 
 @MainActor func s3() async throws {
@@ -1086,42 +1140,48 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
 }
 
 @MainActor func s27() async throws {
-    hdr(27, "A refresh that begins while a start is in flight must not commit over it")
-    // The start goes first and is held on its `POST /timer` while a refresh begins; the refresh is
-    // then held until the start has finished, so only the epoch's bump on the start's exit shows
-    // that the two overlapped.
+    hdr(27, "A refresh asked for while a start is in flight must wait for it, then commit")
+    // The start is held on its `POST /timer`, before which FreeAgent would say nothing is running.
+    // A refresh fetching then is bound to be discarded, so it must not fetch until the start ends.
     var tokenStores: [KeychainTokenStore] = []
     defer { tokenStores.forEach { $0.clear() } }
     @MainActor func race(timerStatus: Int) async throws
         -> (store: FreeAgentDataStore, setUpAt: Date?, start: Result<RatchetTimeslip, Error>)? {
         let stub = Stub()
         baseRules(stub, running: nil, recent: "[]")
-        stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 43, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
-        stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 43, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#,
-                     status: timerStatus)
+        let created = slip(id: 43, task: 1, hours: "0.0", datedOn: today(), timerStart: nil)
+        let started = slip(id: 43, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z")
+        stub.setRule("v2/timeslips", body: #"{"timeslip":\#(created)}"#)
+        stub.setRule("/timer", body: #"{"timeslip":\#(started)}"#, status: timerStatus)
         let startGate = GatedStub(inner: stub, gateMatch: "/timer")
-        // `contacts` is fetched only by a refresh.
-        let refreshGate = GatedStub(inner: startGate, gateMatch: "contacts?")
-        let (store, ts) = makeStore(refreshGate); tokenStores.append(ts)
+        let (store, ts) = makeStore(startGate); tokenStores.append(ts)
         try await store.refresh()
         let setUpAt = store.lastRefreshedAt
+        func refreshFetches() -> Int { stub.log.filter { $0.url.contains("users/me") }.count }
+        let fetchesAtSetUp = refreshFetches()
 
         startGate.armed = true
         let start = Task { @MainActor in
             try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
         }
         guard await awaitGate(startGate) else { bad("start gate never fired"); return nil }
-        refreshGate.armed = true
-        let refresh = Task { @MainActor in try await store.refresh() }
-        guard await awaitGate(refreshGate) else { bad("refresh gate never fired"); return nil }
-        // The stub tells the refresh nothing is running, as FreeAgent would before the POST lands.
+        let refresh = Outcome(Task { @MainActor in try await store.refresh() })
+        await settle()
+        if refreshFetches() == fetchesAtSetUp { ok("the refresh fetches nothing while the start is in flight") }
+        else { bad("the refresh fetched while the start was in flight, so its answer was bound to be discarded") }
+        let ran = timerStatus == 200 ? started : created
+        stub.setRule("view=running", body: #"{"timeslips":[\#(timerStatus == 200 ? started : "")]}"#)
+        stub.setRule("timeslips?", body: #"{"timeslips":[\#(ran)]}"#)
         startGate.release()
-        let started = await start.result
-        refreshGate.release()
-        if case .failure(let error) = await refresh.result {
-            bad("the refresh threw, so the epoch guard went untested: \(error)"); return nil
+        let startResult = await start.result
+        // A start that throws may still have changed FreeAgent.
+        if case .failure = startResult, !store.hasLocalWritesSinceRefresh {
+            bad("the failed start left the cache looking fresh, so a menu open would skip refreshing")
         }
-        return (store, setUpAt, started)
+        // A start still counted as in flight would hold the refresh back for good.
+        guard await refresh.ended() else { bad("the refresh never ran, so the start still counts as in flight"); return nil }
+        if case .failure(let error) = refresh.result! { bad("the refresh threw: \(error)"); return nil }
+        return (store, setUpAt, startResult)
     }
 
     guard let succeeded = try await race(timerStatus: 200) else { return }
@@ -1130,69 +1190,31 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
         bad("the start failed, so the race went untested: \(error)")
     case .success(let started):
         let running = succeeded.store.currentRunningTimeslip
-        if running?.id == started.id { ok("the start survived a refresh that began during it") }
-        else { bad("the refresh committed \"nothing running\" over the timer just started: running=\(running?.id ?? "nil")") }
+        if running?.id == started.id, succeeded.store.lastRefreshedAt != succeeded.setUpAt {
+            ok("then commits, with the timer the start began running")
+        } else {
+            bad("the refresh left running=\(running?.id ?? "nil"), refreshed=\(succeeded.store.lastRefreshedAt != succeeded.setUpAt)")
+        }
     }
 
-    // A start that throws may still have started the timer, so its exit counts as well.
     guard let failed = try await race(timerStatus: 500) else { return }
     guard case .failure = failed.start else { bad("the start succeeded, so its failure path went untested"); return }
-    if failed.store.lastRefreshedAt == failed.setUpAt { ok("and one that began during a failed start is discarded too") }
-    else { bad("a refresh that began during a failed start was taken as current") }
-    if failed.store.hasLocalWritesSinceRefresh { ok("so the next menu open fetches again") }
-    else { bad("the failed start left the cache looking fresh, so the next menu open skips refreshing") }
-    // A start still counted as in flight would have every later refresh discarded.
-    try await failed.store.refresh()
     if failed.store.lastRefreshedAt != failed.setUpAt, !failed.store.hasLocalWritesSinceRefresh {
-        ok("and that next refresh commits")
+        ok("and one asked for during a failed start commits once it has ended")
     } else {
-        bad("the next refresh was discarded too, so the failed start still counts as in flight")
+        bad("the refresh asked for during a failed start never committed")
     }
 }
 
 @MainActor func s28() async throws {
-    hdr(28, "A refresh already in flight when a stop begins must not commit over it mid-stop")
+    hdr(28, "A refresh already in flight when a stop begins must neither commit nor return mid-stop")
     let stub = Stub()
     let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
+    let stopped = slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil)
     baseRules(stub, running: running, recent: "[\(running)]")
-    stub.setRule("timeslips/9", body: #"{"timeslip":\#(slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil))}"#)
+    stub.setRule("timeslips/9", body: #"{"timeslip":\#(stopped)}"#)
     // `stopTimer` clears the running timer once its DELETE lands, then suspends on this read-back.
     let readBackGate = GatedStub(inner: stub, gateMatch: "timeslips/9", gateMethod: "GET")
-    // `contacts` is fetched only by a refresh.
-    let refreshGate = GatedStub(inner: readBackGate, gateMatch: "contacts?")
-    let (store, ts) = makeStore(refreshGate); defer { ts.clear() }
-    try await store.refresh()
-    let setUpAt = store.lastRefreshedAt
-
-    // The refresh begins before the stop and reaches its commit while the stop waits on its
-    // read-back, before the stop's exit has moved the epoch. Scenario 29 begins it during the stop.
-    refreshGate.armed = true
-    let refresh = Task { @MainActor in try await store.refresh() }
-    guard await awaitGate(refreshGate) else { bad("refresh gate never fired"); return }
-    readBackGate.armed = true
-    let stop = Task { @MainActor in try await store.stopTimer() }
-    guard await awaitGate(readBackGate) else { bad("read-back gate never fired"); return }
-    // The stub tells the refresh the timer is running, as FreeAgent would before the DELETE lands.
-    refreshGate.release()
-    if case .failure(let error) = await refresh.result {
-        bad("the refresh threw, so the guard went untested: \(error)"); return
-    }
-    if store.lastRefreshedAt == setUpAt { ok("the refresh that landed mid-stop was discarded") }
-    else { bad("the refresh that landed mid-stop was taken as current") }
-    readBackGate.release()
-    if case .failure(let error) = await stop.result { bad("the stop failed, so the race went untested: \(error)"); return }
-    if store.currentRunningTimeslip == nil { ok("and the timer stays stopped") }
-    else { bad("the refresh put back the timer just stopped: running=\(store.currentRunningTimeslip!.id)") }
-}
-
-@MainActor func s29() async throws {
-    hdr(29, "A refresh that begins during a stop must not commit over it mid-stop")
-    let stub = Stub()
-    let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
-    baseRules(stub, running: running, recent: "[\(running)]")
-    stub.setRule("timeslips/9", body: #"{"timeslip":\#(slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil))}"#)
-    let deleteGate = GatedStub(inner: stub, gateMatch: "/timer", gateMethod: "DELETE")
-    let readBackGate = GatedStub(inner: deleteGate, gateMatch: "timeslips/9", gateMethod: "GET")
     // `contacts` is fetched only by a refresh.
     let refreshGate = GatedStub(inner: readBackGate, gateMatch: "contacts?")
     let (store, ts) = makeStore(refreshGate); defer { ts.clear() }
@@ -1201,36 +1223,73 @@ func logTask1(_ store: FreeAgentDataStore, on date: Date = Date()) async throws 
     func runningChecks() -> Int { stub.log.filter { $0.url.contains("view=running") }.count }
     let checksAtSetUp = runningChecks()
 
-    // The stop is held on its DELETE while a refresh begins, and the refresh reaches its commit
-    // while the stop waits on its read-back, so neither the refresh's start nor its commit falls
-    // outside the stop.
-    deleteGate.armed = true
-    let stop = Task { @MainActor in try await store.stopTimer() }
-    guard await awaitGate(deleteGate) else { bad("DELETE gate never fired"); return }
+    // FreeAgent tells the refresh the timer is running, before the stop begins, and the refresh
+    // reaches its commit while the stop waits on its read-back.
     refreshGate.armed = true
-    let refresh = Task { @MainActor in try await store.refresh() }
+    let refresh = Outcome(Task { @MainActor in try await store.refresh() })
     guard await awaitGate(refreshGate) else { bad("refresh gate never fired"); return }
-    // FreeAgent reports the timer running to both checks made before the DELETE lands, the stop's
-    // and the refresh's.
-    guard await eventually({ runningChecks() == checksAtSetUp + 2 }) else {
-        bad("the refresh's running check never landed before the DELETE"); return
+    guard await eventually({ runningChecks() == checksAtSetUp + 1 }) else {
+        bad("the refresh's running check never landed before the stop"); return
     }
     readBackGate.armed = true
-    deleteGate.release()
+    let stop = Task { @MainActor in try await store.stopTimer() }
     guard await awaitGate(readBackGate) else { bad("read-back gate never fired"); return }
-    // And nothing running once it has, though no check in this race asks again.
     stub.setRule("view=running", body: #"{"timeslips":[]}"#)
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(stopped)]}"#)
     refreshGate.release()
-    if case .failure(let error) = await refresh.result {
-        bad("the refresh threw, so the guard went untested: \(error)"); return
-    }
-    if store.lastRefreshedAt == setUpAt { ok("the refresh that landed mid-stop was discarded") }
-    else { bad("the refresh that landed mid-stop was taken as current") }
+    await settle()
+    if store.lastRefreshedAt == setUpAt, store.currentRunningTimeslip == nil { ok("the refresh that landed mid-stop was discarded") }
+    else { bad("the refresh that landed mid-stop was taken as current: running=\(store.currentRunningTimeslip?.id ?? "nil")") }
+    // Its caller reconciles the menu as it returns, and mid-stop that would show the stop done.
+    if refresh.result == nil { ok("and has not returned") }
+    else { bad("the refresh returned mid-stop, so its caller reconciles against a stop half done") }
     readBackGate.release()
     if case .failure(let error) = await stop.result { bad("the stop failed, so the race went untested: \(error)"); return }
-    if store.currentRunningTimeslip == nil { ok("and the timer stays stopped") }
-    else { bad("the refresh put back the timer just stopped: running=\(store.currentRunningTimeslip!.id)") }
+    guard await refresh.ended() else { bad("the refresh never returned after the stop"); return }
+    if case .failure(let error) = refresh.result! { bad("the refresh threw: \(error)"); return }
+    if store.lastRefreshedAt != setUpAt, store.currentRunningTimeslip == nil, store.timeslips.map(\.hours) == [0.75] {
+        ok("it fetched again once the stop had ended, and committed the timer stopped")
+    } else {
+        bad("after the stop: refreshed=\(store.lastRefreshedAt != setUpAt), running=\(store.currentRunningTimeslip?.id ?? "nil"), hours=\(store.timeslips.map(\.hours))")
+    }
 }
+
+@MainActor func s29() async throws {
+    hdr(29, "A refresh asked for during a stop must wait for it, then commit")
+    let stub = Stub()
+    let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
+    let stopped = slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil)
+    baseRules(stub, running: running, recent: "[\(running)]")
+    stub.setRule("timeslips/9", body: #"{"timeslip":\#(stopped)}"#)
+    let readBackGate = GatedStub(inner: stub, gateMatch: "timeslips/9", gateMethod: "GET")
+    let (store, ts) = makeStore(readBackGate); defer { ts.clear() }
+    try await store.refresh()
+    let setUpAt = store.lastRefreshedAt
+    func refreshFetches() -> Int { stub.log.filter { $0.url.contains("users/me") }.count }
+    let fetchesAtSetUp = refreshFetches()
+
+    // The stop's DELETE has landed and its read-back is held for longer than a whole refresh
+    // takes, so a refresh fetching now would begin and end inside the stop.
+    readBackGate.armed = true
+    let stop = Task { @MainActor in try await store.stopTimer() }
+    guard await awaitGate(readBackGate) else { bad("read-back gate never fired"); return }
+    stub.setRule("view=running", body: #"{"timeslips":[]}"#)
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(stopped)]}"#)
+    let refresh = Outcome(Task { @MainActor in try await store.refresh() })
+    await settle()
+    if refreshFetches() == fetchesAtSetUp { ok("the refresh fetches nothing while the stop is in flight") }
+    else { bad("the refresh fetched during the stop, though its answer was bound to be discarded") }
+    readBackGate.release()
+    if case .failure(let error) = await stop.result { bad("the stop failed, so the race went untested: \(error)"); return }
+    guard await refresh.ended() else { bad("the refresh never returned after the stop"); return }
+    if case .failure(let error) = refresh.result! { bad("the refresh threw: \(error)"); return }
+    if store.lastRefreshedAt != setUpAt, store.currentRunningTimeslip == nil, store.timeslips.map(\.hours) == [0.75] {
+        ok("then commits once the stop has ended")
+    } else {
+        bad("the refresh asked for during the stop was dropped: refreshed=\(store.lastRefreshedAt != setUpAt)")
+    }
+}
+
 
 /// FreeAgent's contacts, projects and tasks in miniature, as `TimeslipServer` is its timeslips:
 /// a create is applied before faults are injected, and lists are answered from what is held,
@@ -1623,9 +1682,118 @@ func resourceStore() -> (ResourceServer, FreeAgentDataStore, KeychainTokenStore)
     }
 }
 
+/// Adding a client needs no account, so of the writes the menu offers it is the one that can land
+/// before the launch refresh does.
+@MainActor
+func addGlobex(_ stub: Stub, _ store: FreeAgentDataStore) async throws {
+    stub.setRule("v2/contacts", body: #"{"contact":{"url":"\#(U)/contacts/2","organisation_name":"Globex","first_name":null,"last_name":null,"email":null,"phone_number":null,"address1":null,"town":null,"postcode":null,"country":null}}"#)
+    _ = try await store.addClient(organisationName: "Globex", firstName: nil, lastName: nil, email: nil,
+                                  phoneNumber: nil, address1: nil, town: nil, postcode: nil, country: nil)
+}
+
+@MainActor func s34() async throws {
+    hdr(34, "A start made before the launch refresh lands must succeed though a write overtakes that refresh")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 104, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    stub.setRule("/timer", body: #"{"timeslip":\#(slip(id: 104, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T14:00:00Z"))}"#)
+    // `contacts?` is a refresh's fetch, not the create's POST.
+    let gate = GatedStub(inner: stub, gateMatch: "contacts?")
+    let (store, ts) = makeStore(gate); defer { ts.clear() }
+    gate.armed = true
+    let launchRefresh = Task { @MainActor in try? await store.refresh() }
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    // The start joins the launch refresh for the account it needs.
+    let start = Task { @MainActor in
+        try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    }
+    for _ in 0..<5 { await Task.yield() }
+    try await addGlobex(stub, store)
+    gate.release()
+    _ = await launchRefresh.value
+    do {
+        _ = try await start.value
+        ok("the start fetches the account again and succeeds")
+    } catch {
+        bad("the start failed, though only its refresh had been overtaken: \(error)")
+    }
+}
+
+@MainActor func s35() async throws {
+    hdr(35, "Logging in must replace the last session's account though that session's stop is still in flight")
+    let stub = Stub()
+    let running = slip(id: 9, task: 1, hours: "0.0", datedOn: today(), timerStart: "2026-08-19T09:00:00Z")
+    baseRules(stub, running: running, recent: "[\(running)]")
+    stub.setRule("timeslips/9", body: #"{"timeslip":\#(slip(id: 9, task: 1, hours: "0.75", datedOn: today(), timerStart: nil))}"#)
+    let readBackGate = GatedStub(inner: stub, gateMatch: "timeslips/9", gateMethod: "GET")
+    let (store, ts) = makeStore(readBackGate); defer { ts.clear() }
+    try await store.refresh()
+    let app = AppState(); app.logIn(); app.reconcile(with: store)
+
+    // The stop is slow to finish, and logging out doesn't wait for it.
+    readBackGate.armed = true
+    let stop = Task { @MainActor in try await store.stopTimer() }
+    guard await awaitGate(readBackGate) else { bad("read-back gate never fired"); return }
+    app.logOut()
+    // Someone else signs in, so FreeAgent answers for their account.
+    stub.setRule("users/me", body: #"{"user":{"url":"\#(U)/users/2","email":"bo@example.com"}}"#)
+    stub.setRule("view=running", body: #"{"timeslips":[]}"#)
+    stub.setRule("timeslips?", body: #"{"timeslips":[]}"#)
+    // Exactly the login path: refresh, then log in and reconcile.
+    let login = Outcome(Task { @MainActor in try await store.refresh() })
+    await settle()
+    readBackGate.release()
+    _ = await stop.result
+    guard await login.ended() else { bad("the login refresh never returned"); return }
+    if case .failure(let error) = login.result! { bad("the login refresh threw: \(error)"); return }
+    app.logIn(); app.reconcile(with: store)
+    if store.accountEmail == "bo@example.com", store.timeslips.isEmpty { ok("the menu shows the new account's state") }
+    else { bad("login kept the last session's state: account \(store.accountEmail), entries \(store.timeslips.map(\.id))") }
+}
+
+@MainActor func s36() async throws {
+    hdr(36, "A manual refresh that joins one a write has overtaken must still bring FreeAgent's state")
+    let stub = Stub()
+    baseRules(stub, running: nil, recent: "[]")
+    let gate = GatedStub(inner: stub, gateMatch: "contacts?")
+    let (store, ts) = makeStore(gate); defer { ts.clear() }
+    try await store.refresh()
+
+    gate.armed = true
+    let silent = Task { @MainActor in try? await store.refresh() }
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    try await addGlobex(stub, store)
+    // Meanwhile an entry is logged in the FreeAgent web app, which only a fetch can show.
+    stub.setRule("timeslips?", body: #"{"timeslips":[\#(slip(id: 60, task: 2, hours: "1.0", datedOn: today(), timerStart: nil))]}"#)
+    let manual = Task { @MainActor in try await store.refresh() }
+    for _ in 0..<5 { await Task.yield() }
+    gate.release()
+    _ = await silent.value
+    if case .failure(let error) = await manual.result { bad("the manual refresh threw: \(error)"); return }
+    if store.timeslips.map(\.id) == ["\(U)/timeslips/60"] { ok("it shows the entry logged elsewhere") }
+    else { bad("the manual refresh returned without fetching: entries \(store.timeslips.map(\.id))") }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
-func want(_ n: Int) -> Bool { only == nil || only == n }
+var current = (scenario: 0, since: Date())
+func want(_ n: Int) -> Bool {
+    guard only == nil || only == n else { return false }
+    current = (n, Date())
+    return true
+}
+
+// A refresh waits for every write in flight, so a store that loses count of one leaves the next
+// refresh waiting for good. A scenario that runs that long fails rather than hanging the run.
+Task { @MainActor in
+    while true {
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        guard Date().timeIntervalSince(current.since) > 30 else { continue }
+        bad("scenario \(current.scenario) never finished")
+        print("\n\(bugCount) BUG LINE(S)")
+        exit(1)
+    }
+}
 
 Task { @MainActor in
     do {
@@ -1662,6 +1830,9 @@ Task { @MainActor in
         if want(31) { try await s31() }
         if want(32) { try await s32() }
         if want(33) { try await s33() }
+        if want(34) { try await s34() }
+        if want(35) { try await s35() }
+        if want(36) { try await s36() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)
