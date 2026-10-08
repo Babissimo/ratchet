@@ -10,6 +10,7 @@ public struct MenuActions {
     public let refresh: () -> Void
     public let toggleLaunchAtLogin: () -> Void
     public let openFreeAgent: () -> Void
+    public let sendFeedback: () -> Void
     public let addTask: (_ clientId: String, _ projectId: String) -> Void
     public let addClient: () -> Void
     public let addProject: (_ clientId: String) -> Void
@@ -36,6 +37,7 @@ public struct MenuActions {
         refresh: @escaping () -> Void,
         toggleLaunchAtLogin: @escaping () -> Void,
         openFreeAgent: @escaping () -> Void,
+        sendFeedback: @escaping () -> Void,
         addTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
         addClient: @escaping () -> Void,
         addProject: @escaping (_ clientId: String) -> Void,
@@ -53,6 +55,7 @@ public struct MenuActions {
         self.refresh = refresh
         self.toggleLaunchAtLogin = toggleLaunchAtLogin
         self.openFreeAgent = openFreeAgent
+        self.sendFeedback = sendFeedback
         self.addTask = addTask
         self.addClient = addClient
         self.addProject = addProject

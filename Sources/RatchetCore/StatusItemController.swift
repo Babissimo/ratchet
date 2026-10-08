@@ -252,6 +252,9 @@ public final class StatusItemController {
             let url = self?.dataStore.webAppURL ?? URL(string: "https://app.freeagent.com")!
             NSWorkspace.shared.open(url)
         },
+        sendFeedback: {
+            NSWorkspace.shared.open(FeedbackURL.newIssue())
+        },
         addTask: { [weak self] clientId, projectId in
             self?.presentAddTaskPrompt(clientId: clientId, projectId: projectId)
         },

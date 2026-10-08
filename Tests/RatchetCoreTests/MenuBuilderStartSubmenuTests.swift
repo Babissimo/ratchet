@@ -10,7 +10,7 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
     private func noopActions() -> MenuActions {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
@@ -54,7 +54,7 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
         var addClientCalled = false
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: { addClientCalled = true }, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildStartSubmenu(dataStore: FakeDataStore.seeded(), actions: actions)
@@ -69,7 +69,7 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
         var addedClientId: String?
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { clientId in addedClientId = clientId }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildStartSubmenu(dataStore: FakeDataStore.seeded(), actions: actions)
@@ -107,7 +107,7 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
         var started: TrackedTaskRef?
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let store = FakeDataStore.seeded()
@@ -129,7 +129,7 @@ final class MenuBuilderStartSubmenuTests: XCTestCase {
         var addedProjectId: String?
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { clientId, projectId in addedClientId = clientId; addedProjectId = projectId },
             addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )

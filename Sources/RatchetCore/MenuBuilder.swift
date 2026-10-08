@@ -22,6 +22,7 @@ public enum MenuBuilder {
         let logInItem = ClosureMenuItem(title: "Log in with browser", handler: actions.logIn)
         menu.addItem(logInItem)
         menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Send feedback", handler: actions.sendFeedback))
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
         return menu
     }
@@ -280,6 +281,7 @@ public enum MenuBuilder {
         menu.addItem(launchItem)
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Open FreeAgent", handler: actions.openFreeAgent))
+        menu.addItem(ClosureMenuItem(title: "Send feedback", handler: actions.sendFeedback))
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Log out", handler: actions.logOut))
         return menu
