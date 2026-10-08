@@ -10,7 +10,7 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
     private func noopActions() -> MenuActions {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
@@ -29,20 +29,22 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
             "Launch at login",
             "",
             "Open FreeAgent",
+            "Send feedback",
             "",
             "Log out",
         ])
         XCTAssertEqual(menu.items[1].tag, MenuBuilder.refreshItemTag)
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[3].isSeparatorItem)
-        XCTAssertTrue(menu.items[5].isSeparatorItem)
+        XCTAssertTrue(menu.items[6].isSeparatorItem)
         // Icons are reserved for Start/Stop tracking on the main menu; nothing in Settings
         // carries one.
         XCTAssertNil(menu.items[0].image)
         XCTAssertNil(menu.items[1].image)
         XCTAssertNil(menu.items[2].image)
         XCTAssertNil(menu.items[4].image)
-        XCTAssertNil(menu.items[6].image)
+        XCTAssertNil(menu.items[5].image)
+        XCTAssertNil(menu.items[7].image)
     }
 
     func test_refreshItem_showsNeverRefreshedByDefault() {
@@ -78,7 +80,7 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         var refreshed = false
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: { refreshed = true }, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: { refreshed = true }, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
@@ -91,12 +93,25 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         var loggedOut = false
         let actions = MenuActions(
             logIn: {}, logOut: { loggedOut = true }, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
-        let logOutItem = menu.items[6] as! ClosureMenuItem
+        let logOutItem = menu.items[7] as! ClosureMenuItem
         _ = logOutItem.target?.perform(logOutItem.action, with: logOutItem)
         XCTAssertTrue(loggedOut)
+    }
+
+    func test_sendFeedbackItem_invokesSendFeedbackAction() {
+        var sentFeedback = false
+        let actions = MenuActions(
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: { sentFeedback = true },
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
+        )
+        let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
+        let feedbackItem = menu.items[5] as! ClosureMenuItem
+        _ = feedbackItem.target?.perform(feedbackItem.action, with: feedbackItem)
+        XCTAssertTrue(sentFeedback)
     }
 }

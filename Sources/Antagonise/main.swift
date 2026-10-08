@@ -491,8 +491,8 @@ let acmeRef = TrackedTaskRef(clientId: "\(U)/contacts/1", clientName: "Acme",
 @MainActor
 let inertActions = MenuActions(
     logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-    refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, addTask: { _, _ in }, addClient: {},
-    addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
+    refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {}, addTask: { _, _ in },
+    addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
     switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
 )
 

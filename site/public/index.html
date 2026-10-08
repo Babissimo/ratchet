@@ -628,18 +628,21 @@ html:not(.started) .item.beckon:not(:focus) .gutter { color: var(--green-ink); }
       } },
       SEP,
       { label: 'Open FreeAgent', run: () => say('Open FreeAgent', 'Opens FreeAgent in your browser.') },
+      sendFeedback,
       SEP,
       { label: 'Log out', run: logOut },
     ];
   }
 
+  const sendFeedback = { label: 'Send feedback', run: () => say('Send feedback',
+    'Opens a new GitHub issue in your browser, with your Ratchet and macOS versions already filled in.') };
   const quit = { label: 'Quit', key: '⌘Q', run: () => say('Quit', state.screen === 'tracking'
     ? 'Quits Ratchet. The timer runs in FreeAgent, so it keeps going and Ratchet shows it again on next launch.'
     : 'Quits Ratchet.') };
 
   function rootItems() {
     if (state.screen === 'loggedOut') {
-      return [{ label: 'Log in with browser', run: logIn }, SEP, quit];
+      return [{ label: 'Log in with browser', run: logIn }, SEP, sendFeedback, quit];
     }
     const shared = [
       SEP,

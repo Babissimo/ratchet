@@ -16,7 +16,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
     private func noopActions() -> MenuActions {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
             switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
@@ -45,7 +45,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         var started: TrackedTaskRef?
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { started = $0 }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
             switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
@@ -115,7 +115,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         var switchedTo: TrackedTaskRef?
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { switchedTo = $0 },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
             switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
@@ -143,7 +143,7 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
         var stopped = false
         let actions = MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: { stopped = true }, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in },
             switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )

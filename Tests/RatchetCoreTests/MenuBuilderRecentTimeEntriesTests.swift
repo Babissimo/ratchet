@@ -10,7 +10,7 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
     private func noopActions(editTimeEntry: @escaping (RatchetTimeslip) -> Void = { _ in }) -> MenuActions {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in },
             logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in },
             editTimeEntry: editTimeEntry, quit: {}

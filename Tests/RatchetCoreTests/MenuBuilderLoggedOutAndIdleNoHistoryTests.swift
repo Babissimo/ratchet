@@ -10,25 +10,26 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
     private func noopActions() -> MenuActions {
         MenuActions(
             logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
     }
 
-    func test_loggedOut_showsLogInThenSeparatorThenQuit() {
+    func test_loggedOut_showsLogInThenSeparatorThenFeedbackAndQuit() {
         let state = AppState()
         let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions())
 
-        XCTAssertEqual(menu.items.map(\.title), ["Log in with browser", "", "Quit"])
+        XCTAssertEqual(menu.items.map(\.title), ["Log in with browser", "", "Send feedback", "Quit"])
         XCTAssertTrue(menu.items[1].isSeparatorItem)
         XCTAssertNil(menu.items[0].image)
+        XCTAssertNil(menu.items[2].image)
     }
 
     func test_loggedOut_logInItemInvokesLogInAction() {
         var loggedIn = false
         let actions = MenuActions(
             logIn: { loggedIn = true }, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
-            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {},
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {},
             addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
         )
         let menu = MenuBuilder.build(state: AppState(), dataStore: FakeDataStore.seeded(), actions: actions)
@@ -37,6 +38,21 @@ final class MenuBuilderLoggedOutAndIdleNoHistoryTests: XCTestCase {
         _ = logInItem.target?.perform(logInItem.action, with: logInItem)
 
         XCTAssertTrue(loggedIn)
+    }
+
+    func test_loggedOut_sendFeedbackItemInvokesSendFeedbackAction() {
+        var sentFeedback = false
+        let actions = MenuActions(
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: { sentFeedback = true },
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
+        )
+        let menu = MenuBuilder.build(state: AppState(), dataStore: FakeDataStore.seeded(), actions: actions)
+
+        let feedbackItem = menu.items[2] as! ClosureMenuItem
+        _ = feedbackItem.target?.perform(feedbackItem.action, with: feedbackItem)
+
+        XCTAssertTrue(sentFeedback)
     }
 
     func test_idleNoHistory_showsOnlyStartAndFooter() {
