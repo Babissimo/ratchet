@@ -87,21 +87,13 @@ that constraint; each item notes what it costs to skip signing.
   app. `AppState`/`FreeAgentDataStore` currently model a single
   `currentRunningTimeslip`/`trackingTask` — this would be a real data-model
   change, not just a UI one.
-- [x]/[ ] **Explore how a timer ought to and does work across days.**
-  Researched: FreeAgent's docs are silent on multi-day running timers, but
-  the schema (`dated_on` a single scalar day, no splitting) implies the
-  whole duration books to the start day — not server-confirmed, just the
-  strong inference. The research surfaced a real, separate bug rather than
-  just an ambiguity: `FreeAgentDataStore.startTimer`'s existing-timeslip
-  lookup was scoped to *today*, so a timer left running past midnight and
-  then re-started (app restart, etc.) would silently create a duplicate
-  timeslip rather than resuming the original — fixed, `startTimer` now
-  checks for any currently-running timeslip first regardless of day.
-  Remaining, not done: a lightweight "running since yesterday" indicator
-  in the menu (cheap, `CalendarDay` already in the codebase) was
-  recommended but not built — no auto-splitting, which is the wrong
-  altitude for a background menu-bar app per the research's own
-  reasoning.
+- [x] **Explore how a timer ought to and does work across days.** FreeAgent
+  books a timeslip's whole duration to its single `dated_on` (inferred from
+  the schema; its docs are silent), so a timer left running past midnight
+  keeps adding to the earlier day. Ratchet doesn't split it: the tracking
+  menu's elapsed row says "booked to yesterday" (or the weekday or date),
+  and starting the task again while that timer runs (after a relaunch, say)
+  resumes its timeslip rather than opening a duplicate for today.
 - [x] **Icons next to some menu buttons**, beyond the current
   `RatchetIcon.mark`/`.appTile` usage. SF Symbol icons (`menuIcon` helper
   in `MenuBuilder.swift`) added to the highest-traffic rows — start/stop,

@@ -157,4 +157,68 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
 
         XCTAssertTrue(stopped)
     }
+
+    // MARK: - The day a running timer books to
+
+    // Mid-August dates, clear of daylight-saving changes, so local hours add up exactly.
+
+    func test_tracking_timerBookedToday_showsElapsedTimeAlone() {
+        let today = day("2026-08-13")
+        let menu = trackingMenu(bookedOn: today, startedAt: at(9, on: today), now: at(10.5, on: today))
+
+        XCTAssertEqual(menu.items[0].title, "1:30")
+    }
+
+    func test_tracking_timerBookedYesterday_saysSo() {
+        let yesterday = day("2026-08-12")
+        let menu = trackingMenu(bookedOn: yesterday, startedAt: at(17, on: yesterday), now: at(9, on: day("2026-08-13")))
+
+        XCTAssertEqual(menu.items[0].title, "16:00 · booked to yesterday")
+        XCTAssertFalse(menu.items[0].isEnabled)
+    }
+
+    func test_tracking_timerBookedEarlierThisWeek_namesTheWeekday() {
+        let monday = day("2026-08-10")
+        let menu = trackingMenu(bookedOn: monday, startedAt: at(9, on: monday), now: at(9, on: day("2026-08-13")))
+
+        XCTAssertEqual(menu.items[0].title, "72:00 · booked to Monday")
+    }
+
+    func test_tracking_timerBookedOverAWeekAgo_givesTheDate() {
+        let booked = day("2026-08-03")
+        let menu = trackingMenu(bookedOn: booked, startedAt: at(9, on: booked), now: at(9, on: day("2026-08-13")))
+
+        XCTAssertEqual(menu.items[0].title, "240:00 · booked to \(CalendarDay.displayString(from: booked))")
+    }
+
+    /// FreeAgent can resume a timer on an older timeslip, and the hours then go to that
+    /// timeslip's day however recently the timer started.
+    func test_tracking_timerResumedTodayOnYesterdaysTimeslip_saysYesterday() {
+        let today = day("2026-08-13")
+        let menu = trackingMenu(bookedOn: day("2026-08-12"), startedAt: at(9, on: today), now: at(10, on: today))
+
+        XCTAssertEqual(menu.items[0].title, "1:00 · booked to yesterday")
+    }
+
+    /// The tracking menu for `sampleTask`, whose timer runs on a timeslip dated `bookedDay`.
+    private func trackingMenu(bookedOn bookedDay: Date, startedAt: Date, now: Date) -> NSMenu {
+        let state = AppState()
+        state.logIn()
+        state.startTracking(sampleTask, startedAt: startedAt)
+        let running = RatchetTimeslip(
+            id: "timeslip-1", clientId: "client-1", projectId: "proj-1", taskId: "task-1",
+            day: bookedDay, timerStartedAt: startedAt, hours: 0
+        )
+        let store = FakeDataStore.seeded()
+        store.seedTimeslips([running], runningId: running.id)
+        return MenuBuilder.build(state: state, dataStore: store, actions: noopActions(), now: { now })
+    }
+
+    private func day(_ text: String) -> Date {
+        CalendarDay.day(from: text)!
+    }
+
+    private func at(_ hours: Double, on day: Date) -> Date {
+        day.addingTimeInterval(hours * 3600)
+    }
 }

@@ -58,6 +58,44 @@ final class CalendarDayTests: XCTestCase {
         }
     }
 
+    /// Counts calendar days, not 24-hour spans: an hour either side of midnight is a day apart.
+    /// Mid-August, so no zone's daylight-saving change falls inside it.
+    func testDaysBetweenCountsCalendarDays() throws {
+        let day = try XCTUnwrap(CalendarDay.day(from: "2026-08-12"))
+        let lateThatDay = day.addingTimeInterval(23 * 3600)
+        let earlyNextDay = day.addingTimeInterval(25 * 3600)
+        XCTAssertEqual(CalendarDay.daysBetween(day, and: lateThatDay), 0)
+        XCTAssertEqual(CalendarDay.daysBetween(lateThatDay, and: earlyNextDay), 1)
+        XCTAssertEqual(CalendarDay.daysBetween(earlyNextDay, and: lateThatDay), -1)
+    }
+
+    /// Havana's clocks go forward at midnight, so 8 March 2026 begins at 01:00 and is 23 hours
+    /// long; it still counts as a whole day.
+    func testDaysBetweenCountsADayWhoseMidnightIsSkipped() throws {
+        let havana = try XCTUnwrap(TimeZone(identifier: "America/Havana"))
+        let firstHour = try XCTUnwrap(makeDate(year: 2026, month: 3, day: 8, hour: 1, zone: havana))
+        let lateThatDay = try XCTUnwrap(makeDate(year: 2026, month: 3, day: 8, hour: 23, zone: havana))
+        let nextMorning = try XCTUnwrap(makeDate(year: 2026, month: 3, day: 9, hour: 9, zone: havana))
+        XCTAssertEqual(CalendarDay.daysBetween(firstHour, and: lateThatDay, in: havana), 0)
+        XCTAssertEqual(CalendarDay.daysBetween(firstHour, and: nextMorning, in: havana), 1)
+    }
+
+    /// Nothing for today or later, then "yesterday", a weekday for the rest of the past week, and
+    /// the date from a week back, where a weekday would read as today's.
+    func testPastDayDisplayStringNamesEachRangeOfDays() throws {
+        let thursdayMorning = try XCTUnwrap(CalendarDay.day(from: "2026-08-13")).addingTimeInterval(9 * 3600)
+        func name(_ text: String) throws -> String? {
+            CalendarDay.pastDayDisplayString(from: try XCTUnwrap(CalendarDay.day(from: text)), now: thursdayMorning)
+        }
+        XCTAssertNil(try name("2026-08-14"))
+        XCTAssertNil(try name("2026-08-13"))
+        XCTAssertEqual(try name("2026-08-12"), "yesterday")
+        XCTAssertEqual(try name("2026-08-11"), "Tuesday")
+        XCTAssertEqual(try name("2026-08-07"), "Friday")
+        let weekBack = try XCTUnwrap(CalendarDay.day(from: "2026-08-06"))
+        XCTAssertEqual(try name("2026-08-06"), CalendarDay.displayString(from: weekBack))
+    }
+
     func testRejectsMalformedInput() {
         XCTAssertNil(CalendarDay.day(from: ""))
         XCTAssertNil(CalendarDay.day(from: "not a date"))

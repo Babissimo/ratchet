@@ -47,6 +47,9 @@ public final class StatusItemController {
     /// Exposed for tests to inspect the live NSStatusItem's menu/icon.
     public var statusItemForTesting: NSStatusItem { statusItem }
 
+    /// Exposed so tests can fire the elapsed-time tick rather than wait a second for it.
+    var elapsedTimerForTesting: Timer? { elapsedTimer }
+
     /// Invoked after a successful `appState.logOut()`, e.g. to clear stored credentials.
     public var onLogOut: (() -> Void)?
 
@@ -410,7 +413,7 @@ public final class StatusItemController {
         // the menu closes, once `isMenuOpen` is false again, so by the time the user reopens it
         // the menu already reflects everything a skipped rebuild would have shown.
         guard !isMenuOpen else { return }
-        let menu = MenuBuilder.build(state: appState, dataStore: dataStore, actions: actions)
+        let menu = MenuBuilder.build(state: appState, dataStore: dataStore, actions: actions, now: now)
         menu.delegate = menuOpenDelegate
         statusItem.menu = menu
         if case .tracking = appState.screen {
@@ -685,13 +688,18 @@ public final class StatusItemController {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         if case .tracking(_, let startedAt) = appState.screen {
+            // Taken with `startedAt`, so the row describes the timeslip the rest of its menu was
+            // built from: an open menu isn't rebuilt when a refresh adopts a different one.
+            let bookedDay = dataStore.currentRunningTimeslip?.day
             let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
                 // Scheduled on RunLoop.main below, so this always fires on the main thread;
                 // `assumeIsolated` tells the compiler what the runtime already guarantees.
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     guard case .tracking = self.appState.screen else { return }
-                    self.elapsedMenuItem?.title = ElapsedTimeFormatter.format(seconds: Date().timeIntervalSince(startedAt))
+                    self.elapsedMenuItem?.title = MenuBuilder.elapsedItemTitle(
+                        startedAt: startedAt, bookedDay: bookedDay, now: self.now()
+                    )
                     // The tooltip's own elapsed line needs the same per-second tick as the
                     // menu row above — otherwise it goes stale the moment it's first shown.
                     self.updateTooltip()

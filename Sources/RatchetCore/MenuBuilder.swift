@@ -61,8 +61,8 @@ public enum MenuBuilder {
     static func buildTracking(task: TrackedTaskRef, startedAt: Date, dataStore: DataStore, state: AppState, actions: MenuActions, now: () -> Date = Date.init) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let elapsed = ElapsedTimeFormatter.format(seconds: now().timeIntervalSince(startedAt))
-        menu.addItem(disabledItem(elapsed))
+        let elapsedTitle = elapsedItemTitle(startedAt: startedAt, bookedDay: dataStore.currentRunningTimeslip?.day, now: now())
+        menu.addItem(disabledItem(elapsedTitle))
         let stopTitle = "Stop tracking \(task.taskName)"
         let stopItem = ClosureMenuItem(title: stopTitle, handler: actions.stopTracking)
         stopItem.attributedTitle = twoLineAttributedTitle(
@@ -87,6 +87,18 @@ public enum MenuBuilder {
         menu.addItem(settingsItem)
         menu.addItem(ClosureMenuItem(title: "Quit", handler: actions.quit, keyEquivalent: "q"))
         return menu
+    }
+
+    /// The tracking menu's top row: elapsed time, then the day the hours book to when that is
+    /// before today. FreeAgent books a timeslip's whole duration to its `dated_on`, so a timer
+    /// left running past midnight goes on adding to the earlier day.
+    ///
+    /// `StatusItemController` re-renders this every second rather than only on a rebuild, so
+    /// the note appears at midnight even in a menu built, or held open, before it.
+    static func elapsedItemTitle(startedAt: Date, bookedDay: Date?, now: Date) -> String {
+        let elapsed = ElapsedTimeFormatter.format(seconds: now.timeIntervalSince(startedAt))
+        guard let bookedDay, let pastDay = CalendarDay.pastDayDisplayString(from: bookedDay, now: now) else { return elapsed }
+        return "\(elapsed) · booked to \(pastDay)"
     }
 
     /// "Start timer" is the task picker whose leaves start the clock.
