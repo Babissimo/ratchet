@@ -8,7 +8,8 @@
 # Xcode project.
 #
 # Usage: scripts/build-app.sh [debug|release]
-# Set FREEAGENT_SANDBOX=1 to build against FreeAgent's sandbox.
+# Set FREEAGENT_SANDBOX=1 to build against FreeAgent's sandbox, and RATCHET_VERSION (e.g. 1.2.0)
+# to stamp the bundle with a release version.
 
 set -euo pipefail
 
@@ -17,6 +18,16 @@ if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" ]]; then
     echo "Usage: $0 [debug|release]" >&2
     exit 1
 fi
+
+# CFBundleVersion accepts only up to three dot-separated integers.
+VERSION="${RATCHET_VERSION:-1.0}"
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    echo "RATCHET_VERSION must be up to three dot-separated integers, not '$VERSION'" >&2
+    exit 1
+fi
+
+# Must match `platforms` in Package.swift.
+MIN_MACOS="13.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -29,7 +40,21 @@ fi
 
 # --product keeps IconExporter (a dev-only AppKit renderer that is never bundled) out of the
 # app build; it gets built explicitly below instead.
-swift build -c "$CONFIG" --product Ratchet ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+if [[ "$CONFIG" == "release" ]]; then
+    # A release has to run on both Intel and Apple silicon. `swift build --arch` would need
+    # Xcode's xcbuild, so build each architecture on its own and join them with lipo.
+    for ARCH in arm64 x86_64; do
+        swift build -c release --product Ratchet --triple "$ARCH-apple-macosx$MIN_MACOS" \
+            ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+    done
+    BIN_PATH=".build/universal/Ratchet"
+    mkdir -p "$(dirname "$BIN_PATH")"
+    lipo -create -output "$BIN_PATH" \
+        .build/arm64-apple-macosx/release/Ratchet .build/x86_64-apple-macosx/release/Ratchet
+else
+    swift build -c debug --product Ratchet ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+    BIN_PATH=".build/debug/Ratchet"
+fi
 
 # The icon is drawn by RatchetIcon in Swift, so regenerate it from current source on every build
 # rather than trusting the committed .icns — otherwise a colour or texture tweak changes the
@@ -44,7 +69,6 @@ rm -rf "$ICON_DIR/AppIcon.iconset"
 swift run -c "$CONFIG" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} IconExporter "$ICON_DIR" > /dev/null
 iconutil -c icns "$ICON_DIR/AppIcon.iconset" -o "$ICNS_PATH"
 
-BIN_PATH=".build/$CONFIG/Ratchet"
 APP_DIR=".build/Ratchet.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -72,7 +96,7 @@ if ! cmp -s "$FREEAGENT_ICON_PATH" "design/icons/freeagent-icon.png"; then
     echo "    cp $FREEAGENT_ICON_PATH design/icons/freeagent-icon.png" >&2
 fi
 
-cat > "$CONTENTS_DIR/Info.plist" << 'PLIST'
+cat > "$CONTENTS_DIR/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,9 +108,9 @@ cat > "$CONTENTS_DIR/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.ratchet.app</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>$VERSION</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -98,7 +122,7 @@ cat > "$CONTENTS_DIR/Info.plist" << 'PLIST'
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>$MIN_MACOS</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
