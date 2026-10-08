@@ -22,7 +22,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Build Ratchet.app
         run: RATCHET_VERSION="${GITHUB_REF_NAME#v}" scripts/build-app.sh release
