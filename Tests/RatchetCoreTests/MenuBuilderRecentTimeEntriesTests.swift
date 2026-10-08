@@ -24,9 +24,9 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
         // Both sections are empty here, so this also pins the header positions: index 0 starts
         // "Unbilled", and whatever follows its one "(empty)" row starts "Invoiced".
         XCTAssertEqual(menu.items[0].title, "Unbilled")
-        XCTAssertFalse(menu.items[0].isEnabled)
+        assertIsSectionHeader(menu.items[0])
         XCTAssertEqual(menu.items[2].title, "Invoiced")
-        XCTAssertFalse(menu.items[2].isEnabled)
+        assertIsSectionHeader(menu.items[2])
     }
 
     func test_noHistory_showsEmptyPlaceholderInBothSections() {
@@ -167,5 +167,15 @@ final class MenuBuilderRecentTimeEntriesTests: XCTestCase {
         XCTAssertTrue(menu.items[1].title.hasPrefix("Acme · Website Redesign · Development · 1:00 · "))
         XCTAssertEqual(menu.items[2].title, "Invoiced")
         XCTAssertTrue(menu.items[3].title.hasPrefix("Acme · Website Redesign · Design · 2:00 · "))
+    }
+
+    /// A header must not be clickable. From macOS 14 it is a system section header, which is
+    /// unclickable while still reporting itself enabled; before that it is a disabled row.
+    private func assertIsSectionHeader(_ item: NSMenuItem, file: StaticString = #filePath, line: UInt = #line) {
+        if #available(macOS 14.0, *) {
+            XCTAssertTrue(item.isSectionHeader, file: file, line: line)
+        } else {
+            XCTAssertFalse(item.isEnabled, file: file, line: line)
+        }
     }
 }

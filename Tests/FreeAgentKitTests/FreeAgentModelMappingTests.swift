@@ -68,7 +68,8 @@ final class FreeAgentModelMappingTests: XCTestCase {
 
         let dto = try JSONDecoder().decode(FreeAgentProjectDTO.self, from: json)
 
-        XCTAssertEqual(dto.budget, "0")
+        // A bare number is re-rendered through Double ("0.0"); only its value reaches the model.
+        XCTAssertEqual(dto.budget.flatMap(Double.init), 0)
     }
 
     func test_projectDTO_stillDecodesBudgetAsString() throws {

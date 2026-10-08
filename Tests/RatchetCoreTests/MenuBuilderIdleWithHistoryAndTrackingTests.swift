@@ -30,14 +30,13 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
 
         let menu = MenuBuilder.build(state: state, dataStore: FakeDataStore.seeded(), actions: noopActions())
 
-        XCTAssertEqual(menu.items.map(\.title), [
-            "Start tracking Development",
+        // Client/project context is coupled into the same row via attributedTitle, not a
+        // separate menu item. AppKit rewrites .title to the attributed string's full text, so the
+        // row is read through attributedTitle.
+        XCTAssertEqual(menu.items[0].attributedTitle?.string, "Start tracking Development\nAcme · Website Redesign")
+        XCTAssertEqual(menu.items.dropFirst().map(\.title), [
             "Start timer", "", "Log past time", "Recent time entries", "", "Settings", "Quit",
         ])
-        // Client/project context is coupled into the same row via attributedTitle, not a
-        // separate menu item — the plain .title is the fallback string, the two-line
-        // rendering lives in .attributedTitle.
-        XCTAssertEqual(menu.items[0].attributedTitle?.string, "Start tracking Development\nAcme · Website Redesign")
         XCTAssertNotNil(menu.items[0].image)
     }
 
@@ -71,7 +70,6 @@ final class MenuBuilderIdleWithHistoryAndTrackingTests: XCTestCase {
 
         XCTAssertEqual(menu.items[0].title, "1:47") // elapsed time line, on top per user request
         XCTAssertFalse(menu.items[0].isEnabled)
-        XCTAssertEqual(menu.items[1].title, "Stop tracking Development")
         // Client/project context is coupled into the same row via attributedTitle, matching
         // the "Start tracking" row's treatment.
         XCTAssertEqual(menu.items[1].attributedTitle?.string, "Stop tracking Development\nAcme · Website Redesign")
