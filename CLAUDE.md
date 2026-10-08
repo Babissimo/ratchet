@@ -72,7 +72,17 @@ scripts/build-app.sh debug
 ```
 
 That assembles `.build/Ratchet.app` around the built binary and registers it with
-`lsregister`.
+`lsregister`. Every registered copy competes for `ratchet://`, so unregister a bundle built in a
+worktree (`lsregister -u <path>`) once you're done with it.
+
+`scripts/build-app.sh release` builds a universal (arm64 and x86_64) binary, one architecture at
+a time joined with `lipo`, since `swift build --arch` needs Xcode. `RATCHET_VERSION` sets the
+bundle version.
+
+## Releasing
+
+`scripts/release.sh <version>`; see "Releasing" in `README.md`. The cask itself lives in
+`Babissimo/homebrew-ratchet`, not in this repository.
 
 ## Layout
 

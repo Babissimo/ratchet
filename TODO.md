@@ -62,25 +62,20 @@ that constraint; each item notes what it costs to skip signing.
 
 ## Distribution without notarization
 
-- [ ] **Public GitHub repo.** Needed as the home for release artifacts and
-  the Homebrew tap. Free for public repos.
+- [x] **Public GitHub repo** at `Babissimo/ratchet`, home to the releases.
 
-- [ ] **Own Homebrew tap, not the official `homebrew-cask` repo.** The
-  official repo's quality guidelines likely require signing/notarization
-  for acceptance. A personal tap (`brew tap <you>/ratchet`) has no such
-  gate — `Casks/ratchet.rb` is drafted and ready to host there, with
-  placeholder `version`/`sha256`/`url` to fill in once a release exists.
+- [x] **Own Homebrew tap, not the official `homebrew-cask` repo**, which
+  requires notarisation. `Babissimo/homebrew-ratchet` has no such gate:
+  `brew install babissimo/ratchet/ratchet`.
 
-- [x]/[ ] **GitHub Actions release workflow.** `.github/workflows/release.yml`
-  drafted: tag push (`v*`) → `swift build -c release` →
-  `scripts/build-app.sh release` → `ditto`-zip → GitHub Release. Needs no
-  repository secrets. Untested, as there is no public repo to push a tag to yet.
+- [x] **GitHub Actions release workflow.** A `v*` tag push builds a
+  universal `Ratchet.app` and attaches it, zipped, to a GitHub Release.
+  `scripts/release.sh` pushes the tag and then updates the tap's cask.
 
-- [x]/[ ] **Accept the one-time Gatekeeper prompt, and soften it.**
-  - [x] `README.md` documents right-click → Open for first launch.
-  - [x] `Casks/ratchet.rb` drafted with a `postflight` quarantine-strip,
-    flagged in-file as unverified until there's a real release artifact
-    to test `xattr` against.
+- [x] **Accept the one-time Gatekeeper prompt, and soften it.** `README.md`
+  covers first launch of a downloaded copy. Homebrew quarantines what it
+  downloads, so the cask strips `com.apple.quarantine` after install; a
+  local install without that step leaves the app quarantined.
 
 ## Feature backlog
 
@@ -141,6 +136,12 @@ that constraint; each item notes what it costs to skip signing.
   workaround above entirely.
 - Mac App Store distribution (would need sandboxing work, a paid account,
   and App Review) — not a goal right now, Homebrew is the target.
+- Release builds are signed ad hoc, as the runner has no "Ratchet"
+  certificate, so their designated requirement is a bare cdhash and each
+  upgrade asks once more for access to the Keychain item holding the
+  FreeAgent tokens. Signing releases with one persistent certificate, held
+  as repository secrets and imported into a temporary keychain on the
+  runner, would keep the requirement stable across upgrades.
 - Three state-reconciliation behaviours have no covering check. Each was
   reasoned through and type-checked when written, but nothing in
   `Sources/Antagonise` or `Tests/` exercises it, so a regression would be

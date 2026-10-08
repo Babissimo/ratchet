@@ -33,14 +33,37 @@ notes.
 
 ## Installation
 
-Ratchet isn't signed or notarized (see `TODO.md` for why — it's a cost
-tradeoff, not an oversight), so on first launch Gatekeeper will refuse to
-open it with "Apple could not verify this app is free of malware." This is
-expected for a small unsigned open-source utility. To run it anyway:
-right-click (or Control-click) `Ratchet.app` in Finder, choose **Open**,
-then confirm **Open** again in the dialog that appears. You only need to do
-this once — subsequent launches (including via Spotlight or Dock) work
-normally.
+Ratchet needs macOS 13 or later, on Intel or Apple silicon. With
+[Homebrew](https://brew.sh):
+
+```bash
+brew install babissimo/ratchet/ratchet
+```
+
+Or download `Ratchet.app.zip` from the
+[latest release](https://github.com/Babissimo/ratchet/releases/latest),
+unzip it, and move `Ratchet.app` to Applications.
+
+Ratchet isn't notarised (see `TODO.md` for why: it's a cost trade-off), so
+macOS refuses to open a downloaded copy the first time, saying Apple could
+not verify it is free of malware. The Homebrew install avoids this. For a
+downloaded copy, you only need to get past it once:
+
+- On macOS 15 and later, open Ratchet, choose **Done**, then go to
+  System Settings → Privacy & Security and choose **Open Anyway** beside
+  the message about Ratchet.
+- On macOS 13 and 14, Control-click `Ratchet.app` in Finder, choose
+  **Open**, then **Open** again.
+
+## Releasing
+
+```bash
+scripts/release.sh 1.2.0
+```
+
+This tags `main` on GitHub (so push first) as `v1.2.0`; GitHub Actions then
+builds and publishes the release, and the script points the
+[Homebrew tap](https://github.com/Babissimo/homebrew-ratchet) at it.
 
 ## License
 
