@@ -72,12 +72,18 @@ final class CalendarDayTests: XCTestCase {
         return calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))
     }
 
-    /// `CalendarDay` reads `TimeZone.current`, so exercising other zones means swapping the
-    /// process default for the duration of the block.
+    /// `CalendarDay` reads `TimeZone.current`, which ignores `NSTimeZone.default` but follows the
+    /// `TZ` variable. Foundation caches the system zone, so `TZ` only takes effect after a reset.
     private func withTimeZone(_ zone: TimeZone, _ body: () throws -> Void) rethrows {
-        let original = NSTimeZone.default
-        NSTimeZone.default = zone
-        defer { NSTimeZone.default = original }
+        let original = getenv("TZ").map { String(cString: $0) }
+        setenv("TZ", zone.identifier, 1)
+        NSTimeZone.resetSystemTimeZone()
+        defer {
+            if let original { setenv("TZ", original, 1) } else { unsetenv("TZ") }
+            NSTimeZone.resetSystemTimeZone()
+        }
+        // Without this, a switch that silently fails leaves every test running in the machine's zone.
+        XCTAssertEqual(TimeZone.current.identifier, zone.identifier, "failed to switch to \(zone.identifier)")
         try body()
     }
 }
