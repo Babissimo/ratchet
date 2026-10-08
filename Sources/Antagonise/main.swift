@@ -15,16 +15,17 @@
 // during it, which the count of mutations in flight catches); 30-32 cover a new client, project or
 // task whose create response is lost, which a retry must adopt rather than make again without
 // taking an earlier one of the same name for it, and a create FreeAgent refuses, which must read
-// as refused. Each drives the real `FreeAgentDataStore` against a scriptable stub transport and
-// asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
-// scenario fails.
+// as refused; 33 covers a project or task FreeAgent makes after its parent has left the cache,
+// which must not read as a failure either. Each drives the real `FreeAgentDataStore` against a
+// scriptable stub transport and asserts the *fixed* behaviour, so a `BUG` line means a
+// regression. Exits non-zero if any scenario fails.
 //
 // This is an executable rather than an XCTest case because `swift test` cannot run on a machine
 // without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
 // the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
 // `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all thirty-two
+//     swift run Antagonise          # all thirty-three
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -1258,6 +1259,9 @@ final class ResourceServer: FreeAgentTransport {
     /// After the next create is applied, drops its response and every request after it.
     var offlineAfterCreate = false
     var offline = false
+    /// Contacts hidden in the web app: the contacts list's default `active` view leaves them out,
+    /// but they can still be given projects.
+    var hiddenContacts: Set<String> = []
     private(set) var held: [Kind: [[String: Any]]] = [:]
     /// Every create sent, whether or not it arrived.
     private(set) var posts: [Kind: Int] = [:]
@@ -1317,6 +1321,7 @@ final class ResourceServer: FreeAgentTransport {
             return try respond(request, [kind.envelopeKey: held[kind]!.last!], status: 201)
         }
         var listed = held[kind] ?? []
+        if kind == .contacts { listed = listed.filter { !hiddenContacts.contains($0["url"] as? String ?? "") } }
         if let value = query[kind.lookupFilter] {
             lookups[kind, default: 0] += 1
             listed = listed.filter { record in
@@ -1601,6 +1606,23 @@ func resourceStore() -> (ResourceServer, FreeAgentDataStore, KeychainTokenStore)
     }
 }
 
+@MainActor func s33() async throws {
+    hdr(33, "A project or task FreeAgent made must not be reported as failed when its parent has left the cache")
+    let (server, store, ts) = resourceStore(); defer { ts.clear() }
+    // Acme hidden in the web app: the next refresh drops it, and Site with it, from the cache.
+    server.hiddenContacts = ["\(U)/contacts/1"]
+    try await store.refresh()
+    for made in creatables where made.kind != .contacts {
+        do {
+            let id = try await made.create(store, "Lambda")
+            if server.ids(made.kind).last == id { ok("the \(made.noun) FreeAgent made is returned") }
+            else { bad("returned \(id), not the \(made.noun) FreeAgent made") }
+        } catch {
+            bad("the \(made.noun) FreeAgent made is reported as \(error), which invites making a second")
+        }
+    }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 func want(_ n: Int) -> Bool { only == nil || only == n }
@@ -1639,6 +1661,7 @@ Task { @MainActor in
         if want(30) { try await s30() }
         if want(31) { try await s31() }
         if want(32) { try await s32() }
+        if want(33) { try await s33() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)

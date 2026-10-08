@@ -525,8 +525,11 @@ public final class FreeAgentDataStore: DataStore {
             )
             projectToClientId[created.url] = clientId
             let project = created.toRatchetProject(tasks: [])
-            guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }) else { throw DataStoreError.notFound }
-            clients[clientIndex] = withUpsertedProject(clients[clientIndex], project)
+            // FreeAgent has made the project, so a client the cache has since dropped (hidden in
+            // the web app, say) must not turn it into a failure that invites making a second.
+            if let clientIndex = clients.firstIndex(where: { $0.id == clientId }) {
+                clients[clientIndex] = withUpsertedProject(clients[clientIndex], project)
+            }
             return project
         }
     }
@@ -555,10 +558,11 @@ public final class FreeAgentDataStore: DataStore {
                 post: { [self] in try await apiClient.post("tasks", envelopeKey: "task", query: inProject, body: body) }
             )
             let task = created.toRatchetTask()
-            guard let clientIndex = clients.firstIndex(where: { $0.id == clientId }),
-                  let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId })
-            else { throw DataStoreError.notFound }
-            clients[clientIndex] = withUpsertedTask(clients[clientIndex], projectIndex: projectIndex, task: task)
+            // Returned even when the cache has dropped its project, as in `addProject`.
+            if let clientIndex = clients.firstIndex(where: { $0.id == clientId }),
+               let projectIndex = clients[clientIndex].projects.firstIndex(where: { $0.id == projectId }) {
+                clients[clientIndex] = withUpsertedTask(clients[clientIndex], projectIndex: projectIndex, task: task)
+            }
             return task
         }
     }

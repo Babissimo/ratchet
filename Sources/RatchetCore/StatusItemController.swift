@@ -934,7 +934,15 @@ public final class StatusItemController {
             // rather than implying the task creation failed too.
             guard let client = self.dataStore.clients.first(where: { $0.id == clientId }),
                   let project = client.projects.first(where: { $0.id == projectId })
-            else { return }
+            else {
+                // Refreshing won't bring back a project the last refresh dropped, so this names the
+                // task that now exists rather than suggesting it.
+                let gone = DataStoreError.underlying(
+                    "\u{201C}\(task.name)\u{201D} was created, but Ratchet no longer lists its project, so it can't track it."
+                )
+                self.presentAPIError(gone, action: switchingFromRunningTimer ? "switch tasks" : "start tracking the new task")
+                return
+            }
             let ref = TrackedTaskRef(
                 clientId: client.id, clientName: client.name,
                 projectId: project.id, projectName: project.name,
@@ -1625,6 +1633,14 @@ public final class StatusItemController {
                     endsOn: endsOn
                 )
                 self.rebuild()
+                // Otherwise nothing shows it was made: the menu has no client to list it under.
+                if !self.dataStore.clients.contains(where: { $0.id == clientId }) {
+                    self.presentFormOutcome(
+                        "Project Created",
+                        "\u{201C}\(name)\u{201D} was created, but Ratchet no longer lists its client, so it won't appear in the menu.",
+                        style: .informational
+                    )
+                }
             } catch {
                 self.presentAPIError(error, action: "create the project")
             }
