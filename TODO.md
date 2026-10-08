@@ -134,22 +134,3 @@ that constraint; each item notes what it costs to skip signing.
   FreeAgent tokens. Signing releases with one persistent certificate, held
   as repository secrets and imported into a temporary keychain on the
   runner, would keep the requirement stable across upgrades.
-- Three state-reconciliation behaviours have no covering check. Each was
-  reasoned through and type-checked when written, but nothing in
-  `Sources/Antagonise` or `Tests/` exercises it, so a regression would be
-  silent — and since `swift test` can't run here, the harness is the only
-  place coverage actually counts for:
-  - `startTimer` throwing when a `POST /timeslips/:id/timer` response
-    explicitly reports `timer.running == false` (as opposed to omitting the
-    `timer` object, which is the case that gets a `clock()` stamp). Needs a
-    stub returning `"running":false` on that endpoint.
-  - `updateTimeslip` carrying the cached `timerStartedAt` forward when the
-    PUT response omits the timer object for the entry that's running. This
-    guards the elapsed-time baseline `AppState.reconcile(with:)` reads on every
-    refresh, so a regression would re-base a running timer's clock to now.
-  - The interleaving the two-edge `mutationEpoch` bump exists to close: a
-    refresh that *starts* after a mutation's entry bump and would otherwise
-    commit over it. Harness scenarios 1 and 2 gate the refresh and mutate
-    afterwards, which passes under the old single-edge design too — so the
-    exit bump specifically is unguarded. Needs the mutation to begin first
-    and the refresh to snapshot mid-flight.
