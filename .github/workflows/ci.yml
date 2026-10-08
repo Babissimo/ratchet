@@ -1,12 +1,8 @@
-# Builds Ratchet on every push to main, so a broken build on the trunk is
-# caught immediately. Uses a real Mac runner (macos-latest) because the
-# build links AppKit.
-#
-# `swift test` is not run here: CLAUDE.md notes it doesn't work in this
-# repo's normal dev environment because XCTest needs a full Xcode install,
-# not just the Command Line Tools. macos-latest runners do ship Xcode, but
-# this workflow sticks to `swift build` to match the only verification
-# step actually exercised locally.
+# Builds and tests Ratchet on every push to main and every PR against it. Uses a real Mac runner
+# because the build links AppKit, and because the runner's Xcode supplies the XCTest that the
+# Command Line Tools lack, which makes this the only place the XCTest suites run (see CLAUDE.md,
+# "Building and testing"). Test and Antagonise both write throwaway Keychain items, which the
+# runner's login keychain accepts without a prompt.
 
 name: CI
 
@@ -20,10 +16,25 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # Pinned to release.yml's image, so CI builds with a release's toolchain and SDK, on the macOS
+    # the app is developed on, and an image change can't alter results under an unchanged tree.
+    runs-on: macos-15
+    env:
+      # Unbuffered, a step killed by its timeout still logs the test it was stuck in.
+      NSUnbufferedIO: "YES"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Build
         run: swift build
+
+      # A hang here is most likely an unanswered modal alert; see `presentAlert` in
+      # StatusItemController.
+      - name: Test
+        run: swift test
+        timeout-minutes: 5
+
+      - name: Antagonise
+        run: swift run Antagonise
+        timeout-minutes: 5

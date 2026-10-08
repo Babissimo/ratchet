@@ -23,10 +23,9 @@
 // and asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
 // scenario fails.
 //
-// This is an executable rather than an XCTest case because `swift test` cannot run on a machine
-// without Xcode (see CLAUDE.md) — the unit tests covering this work are unrun code, and this is
-// the only runnable evidence the bugs stay fixed. Run it after any change to `FreeAgentDataStore`,
-// `AppState`, or `AppState.reconcile(with:)`:
+// This is an executable rather than an XCTest case so that it runs on a machine without Xcode,
+// where `swift test` cannot (see CLAUDE.md); CI runs it as well. Run it after any change to
+// `FreeAgentDataStore`, `AppState`, or `AppState.reconcile(with:)`:
 //
 //     swift run Antagonise          # all thirty-six
 //     ONLY=4 swift run Antagonise   # one scenario
