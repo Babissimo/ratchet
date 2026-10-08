@@ -17,11 +17,21 @@ public enum TokenLoadResult {
 }
 
 public final class KeychainTokenStore {
-    private let service: String
+    let service: String
     private let account = "default"
 
-    public init(service: String = "com.ratchet.freeagent") {
+    public init(service: String) {
         self.service = service
+    }
+
+    /// Sandbox and production builds share a bundle id, so each environment needs its own item or
+    /// signing in to one would overwrite the other's session. Production must keep the unsuffixed
+    /// name: existing sign-ins are stored under it.
+    public convenience init(environment: FreeAgentEnvironment) {
+        switch environment {
+        case .production: self.init(service: "com.ratchet.freeagent")
+        case .sandbox: self.init(service: "com.ratchet.freeagent.sandbox")
+        }
     }
 
     public func loadResult() -> TokenLoadResult {

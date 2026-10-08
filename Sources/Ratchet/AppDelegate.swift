@@ -11,8 +11,8 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private let urlSchemeHandler = URLSchemeHandler()
-    private let tokenStore = KeychainTokenStore()
     private let environment = FreeAgentEnvironment.configured
+    private lazy var tokenStore = KeychainTokenStore(environment: environment)
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         urlSchemeHandler.register()

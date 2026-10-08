@@ -43,6 +43,16 @@ final class KeychainTokenStoreTests: XCTestCase {
         XCTAssertNil(store.load())
     }
 
+    // Asserted on the names rather than by saving through each store: those are the developer's
+    // real items, and a save here would overwrite a live session.
+    func test_eachEnvironmentHasItsOwnItem_andProductionKeepsTheOriginalName() {
+        let production = KeychainTokenStore(environment: .production)
+        let sandbox = KeychainTokenStore(environment: .sandbox)
+
+        XCTAssertEqual(production.service, "com.ratchet.freeagent")
+        XCTAssertNotEqual(sandbox.service, production.service)
+    }
+
     func test_isExpired_trueWithin60SecondsOfExpiry() {
         let almostExpired = FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: 30))
         let farFromExpiry = FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: 3600))
