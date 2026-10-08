@@ -21,8 +21,9 @@ private final class StubTransport: FreeAgentTransport {
     }
 }
 
-/// A `StubTransport` that can hold the first request matching `gateMatch` open until released,
-/// so a test can interleave a user action with a refresh that is still in flight.
+/// A `StubTransport` that can hold the reply to the first request matching `gateMatch` until
+/// released, so a test can interleave a user action with a refresh that is still in flight. The
+/// reply is the response stubbed when the request was sent, whatever the test changes meanwhile.
 @MainActor
 private final class GatedStubTransport: FreeAgentTransport {
     var responsesByPathSubstring: [(match: String, status: Int, body: Data)] = []
@@ -68,13 +69,21 @@ private final class GatedStubTransport: FreeAgentTransport {
 
     nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let url = request.url!.absoluteString
-        await waitIfGated(url)
-        return try await MainActor.run {
+        let reply = await MainActor.run {
             guard let entry = responsesByPathSubstring.first(where: { url.contains($0.match) }) else {
                 fatalError("No stubbed response matches \(url)")
             }
             return (entry.body, HTTPURLResponse(url: request.url!, statusCode: entry.status, httpVersion: nil, headerFields: nil)!)
         }
+        await waitIfGated(url)
+        return reply
+    }
+
+    func setBody(_ body: String, for match: String) {
+        guard let index = responsesByPathSubstring.firstIndex(where: { $0.match == match }) else {
+            fatalError("No stubbed response for \(match)")
+        }
+        responsesByPathSubstring[index].body = Data(body.utf8)
     }
 }
 
@@ -665,6 +674,7 @@ final class FreeAgentDataStoreTests: XCTestCase {
         // and the menu showed a green tray and a climbing clock for a stopped timer.
         let today = CalendarDay.dayString(from: Date())
         let runningBody = #"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/9","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-19T09:00:00Z"},"billed_on_invoice":null}"#
+        let stoppedBody = #"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/9","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.75","comment":null,"timer":null,"billed_on_invoice":null}"#
         let transport = GatedStubTransport(gateMatch: "view=running")
         transport.responsesByPathSubstring = [
             (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
@@ -675,7 +685,7 @@ final class FreeAgentDataStoreTests: XCTestCase {
             // settled on. Kept immediately after the "/timer" rule above and before the
             // "timeslips?" one: `send` takes the first substring match, so this rule would
             // otherwise swallow the DELETE's URL, which contains "timeslips/9" too.
-            (match: "timeslips/9", status: 200, body: Data(#"{"timeslip":{"url":"https://api.sandbox.freeagent.com/v2/timeslips/9","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"\#(today)","hours":"0.75","comment":null,"timer":null,"billed_on_invoice":null}}"#.utf8)),
+            (match: "timeslips/9", status: 200, body: Data(#"{"timeslip":\#(stoppedBody)}"#.utf8)),
             (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[\#(runningBody)]}"#.utf8)),
             (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
             (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
@@ -701,6 +711,10 @@ final class FreeAgentDataStoreTests: XCTestCase {
         XCTAssertEqual(stopped?.hours, 0.75)
         XCTAssertNil(stopped?.timerStartedAt)
         XCTAssertNil(store.currentRunningTimeslip)
+        // FreeAgent has the timer stopped now, which the refresh fetches again to learn; only
+        // the held reply predates the stop.
+        transport.setBody(#"{"timeslips":[]}"#, for: "view=running")
+        transport.setBody(#"{"timeslips":[\#(stoppedBody)]}"#, for: "timeslips?")
         transport.release()
         _ = await inFlight.value
 

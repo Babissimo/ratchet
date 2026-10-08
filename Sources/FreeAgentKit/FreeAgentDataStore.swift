@@ -119,9 +119,12 @@ public final class FreeAgentDataStore: DataStore {
     /// it re-reads the stopped one).
     private var mutationEpoch: UInt64 = 0
     private var mutationsInFlight = 0
+    /// Refresh passes waiting for `mutationsInFlight` to reach zero.
+    private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Wraps a mutating method's whole body, so each is counted in `mutationsInFlight` while it
-    /// runs and bumps `mutationEpoch` as it exits.
+    /// runs and bumps `mutationEpoch` as it exits. `body` must never await `refresh()`, which
+    /// waits for the count to reach zero and so would wait on `body` itself.
     private func withMutation<T>(_ body: () async throws -> T) async rethrows -> T {
         mutationsInFlight += 1
         defer {
@@ -130,8 +133,21 @@ public final class FreeAgentDataStore: DataStore {
             // On a throw too, since a write that failed partway may still have changed server
             // state.
             hasLocalWritesSinceRefresh = true
+            if mutationsInFlight == 0 {
+                let waiters = drainWaiters
+                drainWaiters = []
+                waiters.forEach { $0.resume() }
+            }
         }
         return try await body()
+    }
+
+    /// Returns once no mutation is in flight. A loop, since another can begin between the last
+    /// one's exit and this resuming.
+    private func mutationsDrained() async {
+        while mutationsInFlight > 0 {
+            await withCheckedContinuation { drainWaiters.append($0) }
+        }
     }
 
     /// Every write interpolates `currentUserURL` into a body or query, and it is "" until the
@@ -174,14 +190,21 @@ public final class FreeAgentDataStore: DataStore {
             return try await existing.value
         }
         let task = Task<Void, Error> { [self] in
-            try await performRefresh()
+            // A pass begun mid-mutation would be discarded, so none begins until the count
+            // drains. One is still discarded if a mutation begins during it, and then runs again
+            // once that has finished: this repeats only while the user keeps writing.
+            while true {
+                await mutationsDrained()
+                if try await performRefresh() { return }
+            }
         }
         inFlightRefresh = task
         defer { inFlightRefresh = nil }
         return try await task.value
     }
 
-    private func performRefresh() async throws {
+    /// One fetch of everything `refresh()` replaces. Returns whether it committed.
+    private func performRefresh() async throws -> Bool {
         let epoch = mutationEpoch
         // Everything below is built into locals and assigned in the single commit block at the
         // end. The previous shape assigned as it went, so a failure partway through left the
@@ -245,10 +268,8 @@ public final class FreeAgentDataStore: DataStore {
         let newTimeslips = recentDTOs.map { resolvedTimeslip($0, using: newProjectToClientId) }.sorted { $0.day < $1.day }
         let newRunning = runningDTO.map { resolvedTimeslip($0, using: newProjectToClientId) }
 
-        // A mutation overlapped these responses, so they may describe a superseded world. Drop
-        // them without stamping `lastRefreshedAt`; the mutation's exit sets
-        // `hasLocalWritesSinceRefresh`, so the next menu open or wake fetches again.
-        guard mutationEpoch == epoch, mutationsInFlight == 0 else { return }
+        // A mutation overlapped these responses, so they may describe a superseded world.
+        guard mutationEpoch == epoch, mutationsInFlight == 0 else { return false }
 
         // Single commit point: no `await` between here and the end of the function, so no other
         // main-actor work can observe a half-applied refresh.
@@ -261,6 +282,7 @@ public final class FreeAgentDataStore: DataStore {
         currentRunningTimeslip = newRunning
         lastRefreshedAt = clock()
         hasLocalWritesSinceRefresh = false
+        return true
     }
 
     /// The last `startTimer` call queued. Starts run one at a time: two at once can each find no
@@ -280,7 +302,7 @@ public final class FreeAgentDataStore: DataStore {
     private func performStartTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
         // The idle screen offers the remembered task before the launch refresh lands, so a start
         // can arrive before the account is known. Join or run that refresh first, outside the
-        // mutation, since a refresh that commits while one is in flight discards its result.
+        // mutation, since a refresh waits for every mutation in flight to finish.
         if currentUserURL.isEmpty { try await refresh() }
         return try await withMutation {
             let userURL = try requireUserURL()

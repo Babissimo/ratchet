@@ -113,6 +113,10 @@ public protocol DataStore: AnyObject {
         comment: String?
     ) async throws -> RatchetTimeslip
 
+    /// Replaces the cached account with what FreeAgent reports, and returns only once it has:
+    /// callers reconcile against the result without checking. A fetch that one of this store's own
+    /// writes overlapped may predate it, so the store waits for the write and fetches again
+    /// rather than return early or commit it.
     func refresh() async throws
 
     /// Starts (or resumes) today's timer for the given task. Returns the
