@@ -19,7 +19,8 @@
 // parent has left the cache, which must not read as a failure either; 34-36 cover callers that
 // rely on a refresh having committed whenever it returns (a start made before the launch refresh
 // lands, a login while the last session's stop is in flight, and a manual refresh that joins an
-// overtaken one). Each drives the real `FreeAgentDataStore` against a scriptable stub transport
+// overtaken one); 37 covers a login while the last session's refresh is in flight, which it must
+// not take as its own. Each drives the real `FreeAgentDataStore` against a scriptable stub transport
 // and asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
 // scenario fails.
 //
@@ -27,7 +28,7 @@
 // where `swift test` cannot (see CLAUDE.md); CI runs it as well. Run it after any change to
 // `FreeAgentDataStore`, `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all thirty-six
+//     swift run Antagonise          # all thirty-seven
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
@@ -1739,7 +1740,7 @@ func addGlobex(_ stub: Stub, _ store: FreeAgentDataStore) async throws {
     stub.setRule("view=running", body: #"{"timeslips":[]}"#)
     stub.setRule("timeslips?", body: #"{"timeslips":[]}"#)
     // Exactly the login path: refresh, then log in and reconcile.
-    let login = Outcome(Task { @MainActor in try await store.refresh() })
+    let login = Outcome(Task { @MainActor in try await store.refreshForNewSession() })
     await settle()
     readBackGate.release()
     _ = await stop.result
@@ -1771,6 +1772,38 @@ func addGlobex(_ stub: Stub, _ store: FreeAgentDataStore) async throws {
     if case .failure(let error) = await manual.result { bad("the manual refresh threw: \(error)"); return }
     if store.timeslips.map(\.id) == ["\(U)/timeslips/60"] { ok("it shows the entry logged elsewhere") }
     else { bad("the manual refresh returned without fetching: entries \(store.timeslips.map(\.id))") }
+}
+
+@MainActor func s37() async throws {
+    hdr(37, "Logging in must not take a refresh the last session left in flight as its own")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    // `contacts?` is answered after `users/me`, so the held refresh already knows its account.
+    let gate = GatedStub(inner: server, gateMatch: "contacts?")
+    let (store, ts) = makeStore(gate); defer { ts.clear() }
+    try await store.refresh()
+    _ = try await logTask1(store)
+
+    gate.armed = true
+    let silent = Task { @MainActor in try? await store.refresh() }
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    // Log out, and someone else signs in.
+    ts.clear()
+    _ = ts.save(FreeAgentTokens(accessToken: "b", refreshToken: "rb", expiresAt: Date(timeIntervalSinceNow: 3600)))
+    stub.setRule("users/me", body: #"{"user":{"url":"\#(U)/users/2","email":"bo@example.com"}}"#)
+    let login = Outcome(Task { @MainActor in try await store.refreshForNewSession() })
+    await settle()
+    gate.release()
+    _ = await silent.value
+    guard await login.ended() else { bad("the login refresh never returned"); return }
+    if case .failure(let error) = login.result! { bad("the login refresh threw: \(error)"); return }
+    if store.accountEmail == "bo@example.com", store.timeslips.isEmpty { ok("the menu shows the new account's state") }
+    else { bad("login took the last session's refresh: account \(store.accountEmail), entries \(store.timeslips.map(\.id))") }
+    _ = try await logTask1(store)
+    let filedTo = server.slips.last?["user"] as? String ?? "nothing"
+    if filedTo == "\(U)/users/2" { ok("and its first entry is filed against it") }
+    else { bad("the new account's entry was filed against \(filedTo)") }
 }
 
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -1832,6 +1865,7 @@ Task { @MainActor in
         if want(34) { try await s34() }
         if want(35) { try await s35() }
         if want(36) { try await s36() }
+        if want(37) { try await s37() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     exit(bugCount == 0 ? 0 : 1)

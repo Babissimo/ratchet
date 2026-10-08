@@ -725,6 +725,38 @@ final class FreeAgentDataStoreTests: XCTestCase {
         XCTAssertNil(store.timeslips.first?.timerStartedAt)
     }
 
+    func test_refreshForNewSession_doesNotTakeARefreshTheLastSessionLeftInFlight() async throws {
+        // The gate holds `contacts`, which is asked after `users/me`, so the held refresh has
+        // already heard which account it is for.
+        let transport = GatedStubTransport(gateMatch: "contacts")
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+
+        transport.arm()
+        let silent = Task { @MainActor in try? await store.refresh() }
+        guard await transport.waitForGate() else {
+            XCTFail("refresh's contacts request never hit the gate — the interleaving this test exercises did not happen")
+            return
+        }
+        // Its owner logs out and someone else signs in.
+        transport.setBody(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/2","email":"bo@example.com"}}"#, for: "users/me")
+        let login = Task { @MainActor in try await store.refreshForNewSession() }
+        for _ in 0..<5 { await Task.yield() }
+        transport.release()
+        _ = await silent.value
+        try await login.value
+
+        XCTAssertEqual(store.accountEmail, "bo@example.com")
+    }
+
     func test_stopTimer_stopsWhatIsActuallyRunningNotWhatWasCached() async throws {
         // Cache says 100; the server says 200 is running (100 was stopped from the web app and a
         // new one started). Trusting the cache stopped an already-stopped timeslip, reported

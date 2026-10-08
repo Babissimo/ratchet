@@ -235,6 +235,26 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(dataStore.refreshCount, 0)
     }
 
+    func test_logIn_refreshesForTheNewSession() async throws {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = makeController(appState: appState, dataStore: dataStore)
+
+        let menu = try XCTUnwrap(controller.statusItemForTesting.menu)
+        let logIn = menu.indexOfItem(withTitle: "Log in with browser")
+        guard logIn != -1 else { return XCTFail("the logged-out menu offers no Log in with browser") }
+        menu.performActionForItem(at: logIn)
+        // The login awaits `performLogin` off the main actor, which a fixed number of yields can
+        // outrun.
+        let deadline = Date().addingTimeInterval(5)
+        while presentedAlerts.isEmpty, Date() < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        XCTAssertEqual(dataStore.newSessionRefreshCount, 1, "a plain refresh() would join one the last session left in flight")
+        XCTAssertEqual(presentedAlerts, ["Signed in to FreeAgent"])
+    }
+
     func test_systemWake_refreshesWhenStale() async {
         let appState = AppState()
         let dataStore = FakeDataStore.seeded()
