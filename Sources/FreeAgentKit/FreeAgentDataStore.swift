@@ -47,46 +47,23 @@ public final class FreeAgentDataStore: DataStore {
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
     private var currentUserURL: String = ""
-    /// Bumped on **both** entry to and exit from every mutating method (via `withMutation`
-    /// below, which makes forgetting either edge a compile error rather than a silent gap).
-    /// `refresh()` snapshots this before its first request and discards its commit if the value
-    /// has moved by the time it would otherwise commit, because a refresh's responses describe
-    /// the world as of when the server answered them, not as of when it started.
-    ///
-    /// One edge is not enough. Bumping only on entry leaves a hole: a refresh that *starts*
-    /// after a mutation's entry-bump snapshots the already-incremented epoch, so as far as the
-    /// guard is concerned nothing has changed — even though the mutation's own result hasn't
-    /// landed yet. Concretely: the user clicks Start, `startTimer` bumps to N and suspends on
-    /// `fetchRunningTimeslip` (several round trips); the user then hits "Refresh projects &
-    /// tasks" (which deliberately bypasses the staleness gate), and that refresh reads epoch=N;
-    /// its `view=running` query is answered *before* `startTimer`'s `POST /timer` lands, so that
-    /// refresh's "nothing running" snapshot commits straight over a timer that has, in fact,
-    /// already started server-side. The exit bump closes that hole for every exit path,
-    /// including a thrown error, since a mutation that failed partway through may still have
-    /// changed server state a refresh in flight has no way to know about.
-    ///
-    /// Both edges still leave a narrower hole: a refresh that snapshots the epoch *after* a
-    /// mutation's entry-bump and commits *before* its exit-bump sees no epoch movement either,
-    /// and commits normally — this needs a whole refresh to complete inside one mutation's
-    /// single suspension, so it's rare, but real on a slow POST. If that refresh's response
-    /// already includes the entity the mutation is about to write locally (its own request
-    /// landed server-side first), an append-only local write would then insert a second copy of
-    /// it. `logTime`, `addClient`, `addProject`, and `addTask` close that gap the same way
-    /// `updateTimeslip` always has: an id-keyed replace-if-present instead of a bare append.
+    /// Bumped as each mutating method exits, by any path. A refresh discards its result if this
+    /// has moved since it began, or if `mutationsInFlight` is non-zero when it would commit: its
+    /// responses may then predate a mutation's effect on the server, and committing them would
+    /// overwrite what the mutation wrote locally (as `stopTimer` clears the running timer before
+    /// it re-reads the stopped one).
     private var mutationEpoch: UInt64 = 0
+    private var mutationsInFlight = 0
 
-    /// Wraps a mutating method's whole body so the entry and exit epoch bumps can't be
-    /// forgotten independently — see `mutationEpoch`'s doc comment for why both edges matter.
-    /// Bumps on entry, runs `body`, then bumps again via `defer`, on every exit path including a
-    /// thrown error. Replaces the previous shape (a `beginMutation()` call paired by hand with a
-    /// `defer { mutationEpoch &+= 1 }` at each call site), which let a future mutating method
-    /// omit the `defer` with no compiler error and silently reopen the race this guards against.
+    /// Wraps a mutating method's whole body, so each is counted in `mutationsInFlight` while it
+    /// runs and bumps `mutationEpoch` as it exits.
     private func withMutation<T>(_ body: () async throws -> T) async rethrows -> T {
-        mutationEpoch &+= 1
+        mutationsInFlight += 1
         defer {
+            mutationsInFlight -= 1
             mutationEpoch &+= 1
-            // On exit, so a refresh committing mid-mutation can't clear it, and on throw too,
-            // since a write that failed partway may still have changed server state.
+            // On a throw too, since a write that failed partway may still have changed server
+            // state.
             hasLocalWritesSinceRefresh = true
         }
         return try await body()
@@ -199,10 +176,10 @@ public final class FreeAgentDataStore: DataStore {
         let newTimeslips = recentDTOs.map { resolvedTimeslip($0, using: newProjectToClientId) }.sorted { $0.day < $1.day }
         let newRunning = runningDTO.map { resolvedTimeslip($0, using: newProjectToClientId) }
 
-        // A mutation landed while these responses were in flight, so they describe a superseded
-        // world. Drop them — and deliberately don't stamp `lastRefreshedAt`, so the next menu
-        // open or wake treats the data as stale and fetches again.
-        guard mutationEpoch == epoch else { return }
+        // A mutation overlapped these responses, so they may describe a superseded world. Drop
+        // them without stamping `lastRefreshedAt`; the mutation's exit sets
+        // `hasLocalWritesSinceRefresh`, so the next menu open or wake fetches again.
+        guard mutationEpoch == epoch, mutationsInFlight == 0 else { return }
 
         // Single commit point: no `await` between here and the end of the function, so no other
         // main-actor work can observe a half-applied refresh.
@@ -234,7 +211,7 @@ public final class FreeAgentDataStore: DataStore {
     private func performStartTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
         // The idle screen offers the remembered task before the launch refresh lands, so a start
         // can arrive before the account is known. Join or run that refresh first, outside the
-        // mutation: the mutation's epoch bump would make the refresh discard its own result.
+        // mutation, since a refresh that commits while one is in flight discards its result.
         if currentUserURL.isEmpty { try await refresh() }
         return try await withMutation {
             let userURL = try requireUserURL()
@@ -400,8 +377,6 @@ public final class FreeAgentDataStore: DataStore {
                 )
             )
             let client = created.toRatchetClient(projects: [])
-            // id-keyed upsert, not a bare append — see `mutationEpoch`'s doc comment for the
-            // narrow window in which a concurrent refresh can commit this same client first.
             if let index = clients.firstIndex(where: { $0.id == client.id }) {
                 clients[index] = client
             } else {
@@ -492,8 +467,7 @@ public final class FreeAgentDataStore: DataStore {
                 dated_on: dateString(date), hours: String(hours), comment: comment
             ))
             let resolved = resolvedTimeslip(created, clientId: clientId)
-            // id-keyed upsert, not a bare append — see `mutationEpoch`'s doc comment for the
-            // narrow window in which a concurrent refresh can commit this same entry first.
+            // An upsert, since an entry adopted from an earlier attempt may already be cached.
             upsertKeepingDayOrder(resolved)
             // Thrown rather than returned: this request may be a deliberate second entry rather
             // than a retry, and only the user can say which.
