@@ -171,18 +171,9 @@ public final class FreeAgentDataStore: DataStore {
         taskCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
     }
 
-    /// Tracks an in-flight `refresh()` so concurrent callers share one round trip. Same idiom as
-    /// `FreeAgentAPIClient.refreshTokensShared` — see its doc comment.
-    ///
-    /// Nothing serialized these before: the launch-time refresh (`AppDelegate`) and the
-    /// post-login refresh (`StatusItemController`'s `logIn` action) call `refresh()` directly,
-    /// setting neither `isSilentlyRefreshing` nor anything else. Launch with stored tokens, then
-    /// open the menu before the launch refresh finishes, and `menuWillOpen` — seeing
-    /// `lastRefreshedAt == nil` — starts a second, fully concurrent `refresh()`. `refresh()`
-    /// itself never bumped `mutationEpoch`, so neither call's epoch guard trips on the other;
-    /// the loser's single commit block simply overwrites the winner's wholesale and stamps
-    /// `lastRefreshedAt` fresh, hiding the staleness behind `silentlyRefreshIfStale()`'s
-    /// 120-second gate rather than actually resolving it.
+    /// The `refresh()` in flight, which concurrent callers join. Refreshes that each committed would
+    /// leave whichever finished last, though it may have fetched first. The task clears this in the
+    /// main-actor turn it ends in, so nothing can join a refresh that has already ended.
     private var inFlightRefresh: Task<Void, Error>?
 
     public func refresh() async throws {
@@ -190,6 +181,7 @@ public final class FreeAgentDataStore: DataStore {
             return try await existing.value
         }
         let task = Task<Void, Error> { [self] in
+            defer { inFlightRefresh = nil }
             // A pass begun mid-mutation would be discarded, so none begins until the count
             // drains. One is still discarded if a mutation begins during it, and then runs again
             // once that has finished: this repeats only while the user keeps writing.
@@ -199,8 +191,14 @@ public final class FreeAgentDataStore: DataStore {
             }
         }
         inFlightRefresh = task
-        defer { inFlightRefresh = nil }
         return try await task.value
+    }
+
+    public func refreshForNewSession() async throws {
+        // Waited out rather than joined, since its outcome is the previous session's. A refresh in
+        // flight once it has ended began after this call, so `refresh()` may join that one.
+        if let earlier = inFlightRefresh { _ = await earlier.result }
+        try await refresh()
     }
 
     /// One fetch of everything `refresh()` replaces. Returns whether it committed.

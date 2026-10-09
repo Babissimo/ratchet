@@ -132,8 +132,10 @@ public final class StatusItemController {
                     // Refresh BEFORE flipping appState to logged-in: if the fetch fails we're
                     // still honestly in the logged-out state (so "Couldn't log in" is accurate
                     // and the Log In item is still there to retry), and the user never sees a
-                    // flash of a logged-in-but-empty menu in the success case either.
-                    try await self.dataStore.refresh()
+                    // flash of a logged-in-but-empty menu in the success case either. Not
+                    // `refresh()`, which would join one the last session left in flight and adopt
+                    // that session's account.
+                    try await self.dataStore.refreshForNewSession()
                     self.appState.logIn()
                     // Same restore the launch path does — without this, logging out and back in
                     // while a FreeAgent timer runs showed idle, while quit-and-relaunch showed

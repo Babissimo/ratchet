@@ -7,6 +7,8 @@ final class FakeDataStore: DataStore {
     private(set) var clients: [RatchetClient]
     let accountEmail: String
     private(set) var refreshCount = 0
+    /// How many of `refreshCount` came through `refreshForNewSession()`.
+    private(set) var newSessionRefreshCount = 0
     /// Set by tests to make the next `refresh()` call throw instead of succeeding, simulating a
     /// network failure or a dead session (via `FakeSessionExpiredError`).
     var refreshError: Error?
@@ -214,6 +216,12 @@ final class FakeDataStore: DataStore {
         refreshCount += 1
         lastRefreshedAt = clock()
         hasLocalWritesSinceRefresh = false
+    }
+
+    /// The fake shares no fetch between callers, so it has none in flight to wait out.
+    func refreshForNewSession() async throws {
+        try await refresh()
+        newSessionRefreshCount += 1
     }
 
     func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {

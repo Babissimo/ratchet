@@ -119,6 +119,11 @@ public protocol DataStore: AnyObject {
     /// rather than return early or commit it.
     func refresh() async throws
 
+    /// `refresh()` for an account just signed in. Concurrent `refresh()` calls share one fetch, and
+    /// one the previous session left in flight sent its requests with that session's credentials,
+    /// so this waits for any fetch already in flight to end and then runs one of its own.
+    func refreshForNewSession() async throws
+
     /// Starts (or resumes) today's timer for the given task. Returns the
     /// timeslip the timer is running on; its effective start instant is
     /// the UI's elapsed-time baseline.
