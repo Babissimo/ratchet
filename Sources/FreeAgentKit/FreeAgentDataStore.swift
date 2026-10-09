@@ -93,7 +93,7 @@ public final class FreeAgentDataStore: DataStore {
     public private(set) var hasLocalWritesSinceRefresh: Bool = false
     public private(set) var currentRunningTimeslip: RatchetTimeslip?
     /// The signed-in company's own web app URL (e.g. https://acebusiness.sandbox.freeagent.com),
-    /// for "Open FreeAgent" — nil until the first successful `refresh()`.
+    /// for "Open FreeAgent" — nil until a `refresh()` in this session has fetched it.
     public private(set) var webAppURL: URL?
 
     /// How far back `refresh()` fetches timeslips for the "Recent time entries" menu. The menu
@@ -104,10 +104,23 @@ public final class FreeAgentDataStore: DataStore {
     private let apiClient: FreeAgentAPIClient
     private let environment: FreeAgentEnvironment
     private let clock: () -> Date
-    private let timeslipCreates: RetrySafeCreates<TimeslipBody>
-    private let contactCreates: RetrySafeCreates<ContactIdentity>
-    private let projectCreates: RetrySafeCreates<ProjectIdentity>
-    private let taskCreates: RetrySafeCreates<TaskIdentity>
+
+    /// The creates of each kind, made safe to retry.
+    @MainActor
+    private struct Creates {
+        let timeslips: RetrySafeCreates<TimeslipBody>
+        let contacts: RetrySafeCreates<ContactIdentity>
+        let projects: RetrySafeCreates<ProjectIdentity>
+        let tasks: RetrySafeCreates<TaskIdentity>
+
+        init(apiClient: FreeAgentAPIClient, clock: @escaping () -> Date) {
+            timeslips = RetrySafeCreates(apiClient: apiClient, clock: clock)
+            contacts = RetrySafeCreates(apiClient: apiClient, clock: clock)
+            projects = RetrySafeCreates(apiClient: apiClient, clock: clock)
+            tasks = RetrySafeCreates(apiClient: apiClient, clock: clock)
+        }
+    }
+    private var creates: Creates
     /// project URL -> client URL, so timeslip DTOs (which only know their
     /// project) can be assigned the right clientId.
     private var projectToClientId: [String: String] = [:]
@@ -126,20 +139,22 @@ public final class FreeAgentDataStore: DataStore {
     /// runs and bumps `mutationEpoch` as it exits. `body` must never await `refresh()`, which
     /// waits for the count to reach zero and so would wait on `body` itself.
     private func withMutation<T>(_ body: () async throws -> T) async rethrows -> T {
-        mutationsInFlight += 1
-        defer {
-            mutationsInFlight -= 1
-            mutationEpoch &+= 1
-            // On a throw too, since a write that failed partway may still have changed server
-            // state.
-            hasLocalWritesSinceRefresh = true
-            if mutationsInFlight == 0 {
-                let waiters = drainWaiters
-                drainWaiters = []
-                waiters.forEach { $0.resume() }
+        try await apiClient.inSession {
+            mutationsInFlight += 1
+            defer {
+                mutationsInFlight -= 1
+                mutationEpoch &+= 1
+                // On a throw too, since a write that failed partway may still have changed server
+                // state.
+                hasLocalWritesSinceRefresh = true
+                if mutationsInFlight == 0 {
+                    let waiters = drainWaiters
+                    drainWaiters = []
+                    waiters.forEach { $0.resume() }
+                }
             }
+            return try await body()
         }
-        return try await body()
     }
 
     /// Returns once no mutation is in flight. A loop, since another can begin between the last
@@ -165,10 +180,24 @@ public final class FreeAgentDataStore: DataStore {
         self.apiClient = apiClient
         self.environment = environment
         self.clock = clock
-        timeslipCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
-        contactCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
-        projectCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
-        taskCreates = RetrySafeCreates(apiClient: apiClient, clock: clock)
+        creates = Creates(apiClient: apiClient, clock: clock)
+    }
+
+    public func endSession() {
+        apiClient.endSession()
+        clients = []
+        accountEmail = ""
+        timeslips = []
+        lastRefreshedAt = nil
+        hasLocalWritesSinceRefresh = false
+        currentRunningTimeslip = nil
+        webAppURL = nil
+        projectToClientId = [:]
+        currentUserURL = ""
+        // The next account's starts needn't queue behind this one's, which send nothing more.
+        lastStart = nil
+        // A create left unsettled would otherwise be looked for in the next account.
+        creates = Creates(apiClient: apiClient, clock: clock)
     }
 
     /// The `refresh()` in flight, which concurrent callers join. Refreshes that each committed would
@@ -177,21 +206,23 @@ public final class FreeAgentDataStore: DataStore {
     private var inFlightRefresh: Task<Void, Error>?
 
     public func refresh() async throws {
-        if let existing = inFlightRefresh {
-            return try await existing.value
-        }
-        let task = Task<Void, Error> { [self] in
-            defer { inFlightRefresh = nil }
-            // A pass begun mid-mutation would be discarded, so none begins until the count
-            // drains. One is still discarded if a mutation begins during it, and then runs again
-            // once that has finished: this repeats only while the user keeps writing.
-            while true {
-                await mutationsDrained()
-                if try await performRefresh() { return }
+        try await apiClient.inSession {
+            if let existing = inFlightRefresh {
+                return try await existing.value
             }
+            let task = Task<Void, Error> { [self] in
+                defer { inFlightRefresh = nil }
+                // A pass begun mid-mutation would be discarded, so none begins until the count
+                // drains. One is still discarded if a mutation begins during it, and then runs again
+                // once that has finished: this repeats only while the user keeps writing.
+                while true {
+                    await mutationsDrained()
+                    if try await performRefresh() { return }
+                }
+            }
+            inFlightRefresh = task
+            return try await task.value
         }
-        inFlightRefresh = task
-        return try await task.value
     }
 
     public func refreshForNewSession() async throws {
@@ -266,6 +297,8 @@ public final class FreeAgentDataStore: DataStore {
         let newTimeslips = recentDTOs.map { resolvedTimeslip($0, using: newProjectToClientId) }.sorted { $0.day < $1.day }
         let newRunning = runningDTO.map { resolvedTimeslip($0, using: newProjectToClientId) }
 
+        // Fetched for an account that is no longer the one signed in.
+        try apiClient.requireSession()
         // A mutation overlapped these responses, so they may describe a superseded world.
         guard mutationEpoch == epoch, mutationsInFlight == 0 else { return false }
 
@@ -288,16 +321,22 @@ public final class FreeAgentDataStore: DataStore {
     private var lastStart: Task<RatchetTimeslip, Error>?
 
     public func startTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
-        let previous = lastStart
-        let start = Task { [self] in
-            _ = try? await previous?.value
-            return try await performStartTimer(taskId: taskId, projectId: projectId, clientId: clientId)
+        // Tied to the session as it is queued, not as it reaches the front.
+        try await apiClient.inSession {
+            let previous = lastStart
+            let start = Task { [self] in
+                _ = try? await previous?.value
+                return try await performStartTimer(taskId: taskId, projectId: projectId, clientId: clientId)
+            }
+            lastStart = start
+            return try await start.value
         }
-        lastStart = start
-        return try await start.value
     }
 
     private func performStartTimer(taskId: String, projectId: String, clientId: String) async throws -> RatchetTimeslip {
+        // Queued in a session that has since ended: neither a refresh it began nor its count as a
+        // mutation should touch the session signed in now.
+        try apiClient.requireSession()
         // The idle screen offers the remembered task before the launch refresh lands, so a start
         // can arrive before the account is known. Join or run that refresh first, outside the
         // mutation, since a refresh waits for every mutation in flight to finish.
@@ -413,7 +452,7 @@ public final class FreeAgentDataStore: DataStore {
     }
 
     public func runningTimeslip() async throws -> RatchetTimeslip? {
-        try await fetchRunningTimeslip()
+        try await apiClient.inSession { try await fetchRunningTimeslip() }
     }
 
     /// The authoritative "is anything running for this user" query, shared by `refresh()`,
@@ -465,7 +504,7 @@ public final class FreeAgentDataStore: DataStore {
             // Here and in `addProject` and `addTask`, an earlier attempt's result is returned as this
             // one's: unlike a second time entry, a second client, project or task under the same
             // name is not what a retry means.
-            let (created, _) = try await contactCreates.create(
+            let (created, _) = try await creates.contacts.create(
                 ContactIdentity(organisationName: organisationName, firstName: firstName, lastName: lastName),
                 cachedIds: { [self] in Set(clients.map(\.id)) },
                 // Anything created since `createdSince` has been updated since then too.
@@ -520,7 +559,7 @@ public final class FreeAgentDataStore: DataStore {
                 contract_po_reference: contractPoReference,
                 starts_on: startsOn.map(dateString), ends_on: endsOn.map(dateString)
             )
-            let (created, _) = try await projectCreates.create(
+            let (created, _) = try await creates.projects.create(
                 ProjectIdentity(contact: clientId, name: name),
                 cachedIds: { [self] in Set(clients.flatMap(\.projects).map(\.id)) },
                 candidates: { [self] _ in
@@ -571,7 +610,7 @@ public final class FreeAgentDataStore: DataStore {
                 billing_rate: billingRate.map { String($0) }, billing_period: billingPeriod?.rawValue
             )
             let inProject = [URLQueryItem(name: "project", value: projectId)]
-            let (created, _) = try await taskCreates.create(
+            let (created, _) = try await creates.tasks.create(
                 TaskIdentity(project: projectId, name: name),
                 cachedIds: { [self] in Set(clients.flatMap(\.projects).flatMap(\.tasks).map(\.id)) },
                 candidates: { [self] _ in try await apiClient.getList("tasks", query: inProject, listKey: "tasks") },
@@ -596,7 +635,7 @@ public final class FreeAgentDataStore: DataStore {
                 project: projectId, task: taskId, user: userURL,
                 dated_on: dateString(date), hours: String(hours), comment: comment
             )
-            let (created, isEarlierAttempt) = try await timeslipCreates.create(
+            let (created, isEarlierAttempt) = try await creates.timeslips.create(
                 body,
                 cachedIds: { [self] in Set(timeslips.map(\.id)) },
                 candidates: { [self] _ in

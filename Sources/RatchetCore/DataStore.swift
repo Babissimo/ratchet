@@ -124,6 +124,12 @@ public protocol DataStore: AnyObject {
     /// so this waits for any fetch already in flight to end and then runs one of its own.
     func refreshForNewSession() async throws
 
+    /// Called on logging out. Drops the cached account, and stops work the session left in flight
+    /// from sending more requests or committing what it fetched, since the next account to sign in
+    /// may be another's. That work throws an error that `indicatesSessionEnded`, never one that
+    /// `indicatesSessionExpired`.
+    func endSession()
+
     /// Starts (or resumes) today's timer for the given task. Returns the
     /// timeslip the timer is running on; its effective start instant is
     /// the UI's elapsed-time baseline.

@@ -148,7 +148,9 @@ final class RetrySafeCreates<Identity: CreateIdentity> {
         let listed: [Resource]
         do {
             listed = try await candidates(earliest)
-        } catch where !error.indicatesSessionExpired {
+        } catch where !error.indicatesSessionExpired && !error.indicatesSessionEnded {
+            // An ended session's error passes through: `.unconfirmed` invites a retry, and no
+            // create in that session can follow.
             throw DataStoreError.unconfirmed(Identity.made)
         }
         let matches = listed.compactMap { resource -> (resource: Resource, createdAt: Date)? in

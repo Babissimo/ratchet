@@ -34,6 +34,12 @@ public struct URLSessionTransport: FreeAgentTransport {
     }
 }
 
+/// The session a store call began in, which every request it makes carries, including those of the
+/// tasks it starts.
+private enum Bound {
+    @TaskLocal static var session: (client: ObjectIdentifier, generation: UInt64)?
+}
+
 /// `@MainActor`-isolated for the same reason as `DataStore` (its only consumers are the
 /// main-actor `FreeAgentDataStore` and the login flow), and because `inFlightRefresh` below is
 /// mutable shared state that must not be read/written concurrently. Only the `await`s on the
@@ -78,6 +84,32 @@ public final class FreeAgentAPIClient {
         }
         self.jsonEncoder = JSONEncoder()
         self.jsonEncoder.dateEncodingStrategy = .iso8601
+    }
+
+    // MARK: - Sessions
+
+    /// Bumped by `endSession()`.
+    private var session: UInt64 = 0
+
+    /// Called on logging out. Work begun in the session through `inSession` sends nothing more.
+    public func endSession() {
+        session &+= 1
+    }
+
+    /// Runs `body` tied to the current session, or to the one its caller is tied to already.
+    public func inSession<T>(_ body: () async throws -> T) async rethrows -> T {
+        try await Bound.$session.withValue((ObjectIdentifier(self), callerSession), operation: body)
+    }
+
+    /// Throws `.sessionEnded` if the caller is tied to a session that has ended.
+    public func requireSession() throws {
+        if callerSession != session { throw FreeAgentError.sessionEnded }
+    }
+
+    /// The session the caller is tied to: the current one, unless it was tied to an earlier one.
+    private var callerSession: UInt64 {
+        guard let bound = Bound.session, bound.client == ObjectIdentifier(self) else { return session }
+        return bound.generation
     }
 
     // MARK: - Authenticated requests
@@ -181,24 +213,36 @@ public final class FreeAgentAPIClient {
     /// kicked off their own `refreshTokens` call, only the first would succeed — the rest would
     /// get `invalid_grant`, and a late loser could overwrite the good tokens in the Keychain and
     /// log the user out. Every refresh now goes through `refreshTokensShared`, which starts at
-    /// most one exchange at a time.
-    private var inFlightRefresh: Task<FreeAgentTokens, Error>?
+    /// most one exchange at a time for each session.
+    private var inFlightRefresh: (session: UInt64, task: Task<FreeAgentTokens, Error>)?
 
     /// Serializing point for token refresh. If an exchange is already running, awaits it instead
     /// of starting a second one. Callers pass the refresh token they *saw*; if it's stale (the
     /// shared refresh already rotated it), the freshly stored tokens are returned instead of
     /// burning the rotated token a second time.
     private func refreshTokensShared(currentRefreshToken: String) async throws -> FreeAgentTokens {
-        if let existing = inFlightRefresh {
-            return try await existing.value
+        try requireSession()
+        // Joined only within its session: one an ended session left out ends in `.sessionEnded`.
+        if let existing = inFlightRefresh, existing.session == session {
+            return try await existing.task.value
         }
         // Another caller may have completed a refresh between our token load and now, in which
         // case the stored refresh token has already rotated away from ours — reuse theirs.
         if let stored = tokenStore.load(), stored.refreshToken != currentRefreshToken, !stored.isExpired {
             return stored
         }
+        let startedIn = session
         let task = Task<FreeAgentTokens, Error> { [self] in
             let refreshed = try await refreshTokens(currentRefreshToken)
+            // The session may have ended while the exchange was out, leaving no sign-in stored or
+            // another account's. Not `.unauthorized`, which signs out whoever is signed in now.
+            switch tokenStore.loadResult() {
+            case .found(let stored) where stored.refreshToken != currentRefreshToken: throw FreeAgentError.sessionEnded
+            // Cleared by a logout, which ends the session; lost any other way, which the save repairs.
+            case .missing: if session != startedIn { throw FreeAgentError.sessionEnded }
+            // Unreadable says nothing either way, and refusing would lose the rotated token for certain.
+            case .found, .unavailable: break
+            }
             // A failed persist is fatal to the session even though `refreshed` is valid right
             // now: every request reloads from the Keychain, so the next one would pick up the
             // old refresh token that FreeAgent has already rotated away and 401. Failing here
@@ -207,8 +251,8 @@ public final class FreeAgentAPIClient {
             guard tokenStore.save(refreshed) else { throw FreeAgentError.credentialStorageFailed }
             return refreshed
         }
-        inFlightRefresh = task
-        defer { inFlightRefresh = nil }
+        inFlightRefresh = (startedIn, task)
+        defer { if inFlightRefresh?.task == task { inFlightRefresh = nil } }
         return try await task.value
     }
 
@@ -219,6 +263,9 @@ public final class FreeAgentAPIClient {
     }
 
     private func freshTokens() async throws -> FreeAgentTokens {
+        // Before the load, which finds no tokens once a logout has cleared them: `.unauthorized`
+        // would read as this session expiring.
+        try requireSession()
         let tokens: FreeAgentTokens
         switch tokenStore.loadResult() {
         case .found(let stored):
@@ -265,6 +312,8 @@ public final class FreeAgentAPIClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
+        // A token refresh above may have outlasted the session.
+        try requireSession()
         let (data, response) = try await send(request)
 
         if response.statusCode == 401 && !isRetry {

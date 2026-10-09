@@ -142,6 +142,69 @@ final class FreeAgentDataStoreTests: XCTestCase {
         tokenStore.clear()
     }
 
+    func test_endSession_forgetsTheAccount() async throws {
+        let running = #"{"url":"https://api.sandbox.freeagent.com/v2/timeslips/9","project":"https://api.sandbox.freeagent.com/v2/projects/1","task":"https://api.sandbox.freeagent.com/v2/tasks/1","user":"https://api.sandbox.freeagent.com/v2/users/1","dated_on":"2026-08-19","hours":"0.0","comment":null,"timer":{"running":true,"start_from":"2026-08-19T09:00:00Z"},"billed_on_invoice":null}"#
+        let transport = StubTransport()
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme-test"}}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[{"url":"https://api.sandbox.freeagent.com/v2/contacts/1","organisation_name":"Acme","first_name":null,"last_name":null,"email":null,"phone_number":null,"address1":null,"town":null,"postcode":null,"country":null}]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+            (match: "view=running", status: 200, body: Data(#"{"timeslips":[\#(running)]}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[\#(running)]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+        try await store.refresh()
+        XCTAssertNotNil(store.webAppURL)
+
+        store.endSession()
+
+        XCTAssertEqual(store.accountEmail, "")
+        XCTAssertTrue(store.clients.isEmpty)
+        XCTAssertTrue(store.timeslips.isEmpty)
+        XCTAssertNil(store.currentRunningTimeslip)
+        XCTAssertNil(store.webAppURL, "Open FreeAgent would open the last session's company")
+        XCTAssertNil(store.lastRefreshedAt)
+    }
+
+    func test_endSession_keepsARefreshInFlightFromCommitting() async throws {
+        let transport = GatedStubTransport(gateMatch: "contacts")
+        transport.responsesByPathSubstring = [
+            (match: "users/me", status: 200, body: Data(#"{"user":{"url":"https://api.sandbox.freeagent.com/v2/users/1","email":"al@example.com"}}"#.utf8)),
+            (match: "company", status: 200, body: Data(#"{"company":{"subdomain":"acme"}}"#.utf8)),
+            (match: "timeslips?", status: 200, body: Data(#"{"timeslips":[]}"#.utf8)),
+            (match: "contacts", status: 200, body: Data(#"{"contacts":[]}"#.utf8)),
+            (match: "projects", status: 200, body: Data(#"{"projects":[]}"#.utf8)),
+            (match: "tasks", status: 200, body: Data(#"{"tasks":[]}"#.utf8)),
+        ]
+        let (store, tokenStore) = makeStore(transport: transport)
+        defer { tokenStore.clear() }
+
+        transport.arm()
+        let silent = Task { @MainActor in try await store.refresh() }
+        guard await transport.waitForGate() else {
+            XCTFail("refresh's contacts request never hit the gate — the interleaving this test exercises did not happen")
+            return
+        }
+        // Every other fetch is answered by now, so only the commit is left once the gate opens.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        store.endSession()
+        transport.release()
+
+        do {
+            try await silent.value
+            XCTFail("a refresh begun before the logout committed after it")
+        } catch FreeAgentError.sessionEnded {
+            // Not `.unauthorized`, which would sign out the account signed in next.
+        } catch {
+            XCTFail("expected FreeAgentError.sessionEnded, got \(error)")
+        }
+        XCTAssertEqual(store.accountEmail, "")
+        XCTAssertNil(store.webAppURL)
+    }
+
     func test_startTimer_reusesExistingTimeslipForToday() async throws {
         let transport = StubTransport()
         transport.responsesByPathSubstring = [

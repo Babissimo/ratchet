@@ -9,9 +9,12 @@ private final class StubTransport: FreeAgentTransport {
     var calls: [Call] = []
     /// Queue of (statusCode, body) pairs returned in order, one per call.
     var responses: [(Int, Data)] = []
+    /// Runs as each request is sent, before its response is returned.
+    var onSend: (URLRequest) async -> Void = { _ in }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         calls.append(Call(request: request))
+        await onSend(request)
         guard !responses.isEmpty else {
             fatalError("StubTransport ran out of queued responses")
         }
@@ -133,6 +136,107 @@ final class FreeAgentAPIClientTests: XCTestCase {
 
         XCTAssertEqual(transport.calls.count, 3)
         store.clear()
+    }
+
+    func test_tokenRefresh_doesNotSaveOverASignInMadeWhileItWasOut() async {
+        struct Thing: Decodable {}
+        let transport = StubTransport()
+        transport.responses = [
+            (200, Data(#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}"#.utf8)), // refresh
+            (200, Data("{}".utf8)), // the request, which must not be sent
+        ]
+        let store = makeStore(expired: true)
+        defer { store.clear() }
+        let nextAccount = FreeAgentTokens(accessToken: "next-access", refreshToken: "next-refresh", expiresAt: Date(timeIntervalSinceNow: 3600))
+        // The user logs out and another account signs in while the exchange is out.
+        transport.onSend = { request in
+            if request.url?.lastPathComponent == "token" { store.save(nextAccount) }
+        }
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        do {
+            _ = try await client.get("things/1") as Thing
+            XCTFail("the request went ahead on the last session's tokens")
+        } catch FreeAgentError.sessionEnded {
+            // Not `.unauthorized`, which would sign out the account signed in now.
+        } catch {
+            XCTFail("expected FreeAgentError.sessionEnded, got \(error)")
+        }
+        XCTAssertEqual(store.load(), nextAccount)
+        XCTAssertEqual(transport.calls.count, 1)
+    }
+
+    func test_tokenRefresh_doesNotSaveAfterALogoutWhileItWasOut() async {
+        struct Thing: Decodable {}
+        let transport = StubTransport()
+        transport.responses = [
+            (200, Data(#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}"#.utf8)), // refresh
+            (200, Data("{}".utf8)), // the request, which must not be sent
+        ]
+        let store = makeStore(expired: true)
+        defer { store.clear() }
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+        // The user logs out while the exchange is out, as `FreeAgentDataStore.endSession` and the
+        // app's `onLogOut` do.
+        transport.onSend = { request in
+            if request.url?.lastPathComponent == "token" {
+                client.endSession()
+                store.clear()
+            }
+        }
+
+        do {
+            _ = try await client.get("things/1") as Thing
+            XCTFail("the request went ahead on the logged-out session's tokens")
+        } catch FreeAgentError.sessionEnded {
+            // expected
+        } catch {
+            XCTFail("expected FreeAgentError.sessionEnded, got \(error)")
+        }
+        XCTAssertNil(store.load(), "the next launch would sign the logged-out account back in")
+    }
+
+    func test_requestTiedToAnEndedSession_isNotSent() async throws {
+        struct Thing: Decodable {}
+        let transport = StubTransport()
+        transport.responses = [(200, Data("{}".utf8))]
+        let store = makeStore()
+        defer { store.clear() }
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+
+        do {
+            try await client.inSession {
+                client.endSession()
+                _ = try await client.get("things/1") as Thing
+            }
+            XCTFail("a request tied to an ended session went ahead")
+        } catch FreeAgentError.sessionEnded {
+            // expected
+        } catch {
+            XCTFail("expected FreeAgentError.sessionEnded, got \(error)")
+        }
+        XCTAssertEqual(transport.calls.count, 0)
+
+        // A request tied to no session, as the login's own are, still goes.
+        _ = try await client.get("things/1") as Thing
+        XCTAssertEqual(transport.calls.count, 1)
+    }
+
+    func test_aSessionTiedToOneClient_doesNotGovernAnother() async throws {
+        struct Thing: Decodable {}
+        let transport = StubTransport()
+        transport.responses = [(200, Data("{}".utf8))]
+        let store = makeStore()
+        defer { store.clear() }
+        let client = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+        let other = FreeAgentAPIClient(environment: .sandbox, tokenStore: store, transport: transport)
+        client.endSession()
+
+        try await other.inSession {
+            _ = try await client.get("things/1") as Thing
+        }
+
+        XCTAssertEqual(transport.calls.count, 1)
     }
 
     func test_authenticatedRequest_stopsAfterOneRetryAndThrowsUnauthorizedOnSecond401() async {
