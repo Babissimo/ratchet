@@ -30,8 +30,9 @@
 //     swift run Antagonise          # all thirty-six
 //     ONLY=4 swift run Antagonise   # one scenario
 //
-// It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>` and clears each one
-// as it goes; if a run is killed part-way, sweep the leftovers with:
+// It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>`. Each scenario clears
+// its own, and a run ended early by the watchdog or by SIGINT, SIGTERM, SIGHUP or SIGALRM clears
+// the rest before it exits. A crash or SIGKILL can still leave some behind; sweep them with:
 //
 //     security dump-keychain 2>/dev/null | grep -o 'com\.ratchet\.antagonise\.[A-F0-9-]*' \
 //       | sort -u | while read s; do security delete-generic-password -s "$s" >/dev/null 2>&1; done
@@ -146,9 +147,21 @@ func slip(id: Int, task: Int, hours: String, datedOn: String, timerStart: String
 }
 func today() -> String { CalendarDay.dayString(from: Date()) }
 
+/// Every store `makeStore` has made. `exit` and a fatal signal end the process without unwinding,
+/// so a scenario cut short never reaches its `defer { ts.clear() }`; `clearMadeTokenStores()`
+/// clears these instead. Locked, because the signal handlers run off the main thread.
+var madeTokenStores: [KeychainTokenStore] = []
+let madeTokenStoresLock = NSLock()
+
+func clearMadeTokenStores() {
+    madeTokenStoresLock.lock(); defer { madeTokenStoresLock.unlock() }
+    madeTokenStores.forEach { $0.clear() }
+}
+
 @MainActor
 func makeStore(_ transport: FreeAgentTransport) -> (FreeAgentDataStore, KeychainTokenStore) {
     let ts = KeychainTokenStore(service: "com.ratchet.antagonise.\(UUID().uuidString)")
+    madeTokenStoresLock.lock(); madeTokenStores.append(ts); madeTokenStoresLock.unlock()
     _ = ts.save(FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: 3600)))
     let api = FreeAgentAPIClient(environment: .sandbox, tokenStore: ts, transport: transport)
     return (FreeAgentDataStore(apiClient: api, environment: .sandbox), ts)
@@ -1782,6 +1795,26 @@ func want(_ n: Int) -> Bool {
     return true
 }
 
+func finish(_ status: Int32) -> Never {
+    clearMadeTokenStores()
+    exit(status)
+}
+
+// A run stopped from outside (Ctrl-C, `timeout`, an alarm) clears up the same way, then dies of the
+// signal rather than exiting, so a shell loop running the harness still stops on Ctrl-C. Handled
+// off the main queue, which a scenario that wedges the main thread would never let them reach.
+let stopSignals = [SIGINT, SIGTERM, SIGHUP, SIGALRM].map { sig in
+    signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+    source.setEventHandler {
+        clearMadeTokenStores()
+        signal(sig, SIG_DFL)
+        raise(sig)
+    }
+    source.resume()
+    return source
+}
+
 // A refresh waits for every write in flight, so a store that loses count of one leaves the next
 // refresh waiting for good. A scenario that runs that long fails rather than hanging the run.
 Task { @MainActor in
@@ -1790,7 +1823,7 @@ Task { @MainActor in
         guard Date().timeIntervalSince(current.since) > 30 else { continue }
         bad("scenario \(current.scenario) never finished")
         print("\n\(bugCount) BUG LINE(S)")
-        exit(1)
+        finish(1)
     }
 }
 
@@ -1834,6 +1867,6 @@ Task { @MainActor in
         if want(36) { try await s36() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
-    exit(bugCount == 0 ? 0 : 1)
+    finish(bugCount == 0 ? 0 : 1)
 }
 RunLoop.main.run()
