@@ -299,6 +299,7 @@ public final class StatusItemController {
     /// "log out" happens, so the menu-driven Log Out and the forced logout below can't diverge.
     private func performLogOut(forgettingMostRecent: Bool = true) {
         appState.logOut(forgettingMostRecent: forgettingMostRecent)
+        dataStore.endSession()
         onLogOut?()
     }
 
@@ -391,6 +392,8 @@ public final class StatusItemController {
             handleSessionExpired()
             return
         }
+        // Work the user left behind by logging out, which whoever is signed in now didn't ask for.
+        if error.indicatesSessionEnded { return }
         if let caveat = error as? DataStoreError, caveat.isUnconfirmed {
             presentUnconfirmed(caveat)
             return

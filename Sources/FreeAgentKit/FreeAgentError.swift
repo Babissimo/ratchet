@@ -14,6 +14,8 @@ public enum FreeAgentError: Error, CustomStringConvertible {
     case credentialStorageFailed
     case credentialStoreUnavailable(OSStatus)
     case invalidURL(String)
+    /// Thrown to work the last session left unfinished, once it has ended.
+    case sessionEnded
 
     public var description: String {
         switch self {
@@ -39,6 +41,8 @@ public enum FreeAgentError: Error, CustomStringConvertible {
             return "couldn't read your FreeAgent login from the Keychain (status \(status)) — this is usually temporary; try again in a moment"
         case .invalidURL(let path):
             return "FreeAgent returned an address Ratchet couldn't use (\"\(path)\")"
+        case .sessionEnded:
+            return "you logged out before this finished, so Ratchet sent nothing more for it"
         }
     }
 }
@@ -50,9 +54,17 @@ extension FreeAgentError: SessionExpiredError {
     ///
     /// `.credentialStoreUnavailable` deliberately does *not* qualify: a Keychain that can't be
     /// read says nothing about whether FreeAgent still accepts the session, and treating it as
-    /// an expiry deleted valid credentials.
+    /// an expiry deleted valid credentials. Nor does `.sessionEnded`: the session it names is over
+    /// already, and signing out again could sign out the account that has signed in since.
     public var isSessionExpired: Bool {
         if case .unauthorized = self { return true }
+        return false
+    }
+}
+
+extension FreeAgentError: SessionEndedError {
+    public var isSessionEnded: Bool {
+        if case .sessionEnded = self { return true }
         return false
     }
 }

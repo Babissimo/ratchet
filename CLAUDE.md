@@ -44,7 +44,7 @@ Two things catch problems before CI does, and both are worth running before push
   swift run Antagonise
   ```
 
-  Thirty-seven scenarios drive the real `FreeAgentDataStore` against a stub transport and assert
+  Forty-three scenarios drive the real `FreeAgentDataStore` against a stub transport and assert
   the fixed behaviour for every local/remote divergence and staleness bug fixed in
   `cbcb28f..HEAD`. It exits non-zero on any regression. Run it after touching
   `FreeAgentDataStore`, `AppState`, or `AppState.reconcile(with:)`; see

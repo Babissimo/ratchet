@@ -218,6 +218,44 @@ final class StatusItemControllerTests: XCTestCase {
 
         XCTAssertEqual(presentedAlerts, ["Signed out of FreeAgent"])
         XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
+        XCTAssertEqual(dataStore.endSessionCount, 1)
+    }
+
+    func test_logOut_endsTheStoresSession() async throws {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        let controller = makeController(appState: appState, dataStore: dataStore)
+        appState.logIn()
+
+        let settings = try XCTUnwrap(controller.statusItemForTesting.menu?.item(withTitle: "Settings")?.submenu)
+        let logOut = settings.indexOfItem(withTitle: "Log out")
+        guard logOut != -1 else { return XCTFail("Settings offers no Log out") }
+        settings.performActionForItem(at: logOut)
+        // Log out defers to `DispatchQueue.main.async`, which a fixed number of yields needn't reach.
+        let deadline = Date().addingTimeInterval(5)
+        while dataStore.endSessionCount == 0, Date() < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        XCTAssertEqual(dataStore.endSessionCount, 1)
+        XCTAssertEqual(controller.statusItemForTesting.menu?.items.first?.title, "Log in with browser")
+    }
+
+    func test_refresh_endedByALogout_isNotReported() async throws {
+        let appState = AppState()
+        let dataStore = FakeDataStore.seeded()
+        dataStore.refreshError = FakeSessionEndedError()
+        let controller = makeController(appState: appState, dataStore: dataStore)
+        appState.logIn()
+
+        let settings = try XCTUnwrap(controller.statusItemForTesting.menu?.item(withTitle: "Settings")?.submenu)
+        let refresh = try XCTUnwrap(settings.items.firstIndex { $0.tag == MenuBuilder.refreshItemTag })
+        settings.performActionForItem(at: refresh)
+        await drainMainActorQueue()
+
+        XCTAssertEqual(dataStore.refreshAttemptCount, 1)
+        XCTAssertEqual(presentedAlerts, [], "whoever is signed in now didn't ask for it")
+        XCTAssertEqual(dataStore.endSessionCount, 0, "an ended session isn't an expired one, to sign out of")
     }
 
     func test_menuWillOpen_whenLoggedOut_doesNotRefresh() async {

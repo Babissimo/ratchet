@@ -20,15 +20,19 @@
 // rely on a refresh having committed whenever it returns (a start made before the launch refresh
 // lands, a login while the last session's stop is in flight, and a manual refresh that joins an
 // overtaken one); 37 covers a login while the last session's refresh is in flight, which it must
-// not take as its own. Each drives the real `FreeAgentDataStore` against a scriptable stub transport
-// and asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
+// not take as its own; 38-43 cover work a session leaves in flight as it logs out, which must not
+// reach the next: a token refresh that would replace its sign-in, restore the one logged out, or
+// fail its own (38), the company "Open FreeAgent" opens (39), a start or logged entry that would
+// send with its sign-in (40-42), and a create left unsettled that would be looked for in its
+// account (43). Each drives the real `FreeAgentDataStore` against a scriptable stub transport and
+// asserts the *fixed* behaviour, so a `BUG` line means a regression. Exits non-zero if any
 // scenario fails.
 //
 // This is an executable rather than an XCTest case so that it runs on a machine without Xcode,
 // where `swift test` cannot (see CLAUDE.md); CI runs it as well. Run it after any change to
 // `FreeAgentDataStore`, `AppState`, or `AppState.reconcile(with:)`:
 //
-//     swift run Antagonise          # all thirty-seven
+//     swift run Antagonise          # all forty-three
 //     ONLY=4 swift run Antagonise   # one scenario
 //
 // It writes throwaway Keychain items under `com.ratchet.antagonise.<uuid>`. Each scenario clears
@@ -46,12 +50,13 @@ import RatchetCore
 final class Stub: FreeAgentTransport {
     struct Rule { let match: String; var status: Int; var body: String }
     var rules: [Rule] = []
-    var log: [(method: String, url: String, body: String)] = []
+    var log: [(method: String, url: String, body: String, bearer: String)] = []
 
     nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         await MainActor.run {
             let url = request.url!.absoluteString
-            log.append((request.httpMethod ?? "?", url, String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""))
+            log.append((request.httpMethod ?? "?", url, String(data: request.httpBody ?? Data(), encoding: .utf8) ?? "",
+                        request.value(forHTTPHeaderField: "Authorization") ?? ""))
             guard let rule = rules.first(where: { url.contains($0.match) }) else { fatalError("no stub for \(url)") }
             return (Data(rule.body.utf8), HTTPURLResponse(url: request.url!, statusCode: rule.status, httpVersion: nil, headerFields: nil)!)
         }
@@ -69,7 +74,8 @@ final class Stub: FreeAgentTransport {
 /// Holds the reply to the first request matching `gateMatch` (and `gateMethod`) until released, so
 /// a user action and a refresh can be interleaved. The inner transport answers as the request is
 /// sent, so a held reply describes FreeAgent as it was then, whatever the scenario changes
-/// meanwhile. Gates stack, so two requests can each be held and released separately.
+/// meanwhile; a request that gets no reply has its failure held instead. Gates stack, so two
+/// requests can each be held and released separately.
 @MainActor
 final class GatedStub: FreeAgentTransport {
     let inner: any FreeAgentTransport & Sendable
@@ -93,9 +99,10 @@ final class GatedStub: FreeAgentTransport {
     }
 
     nonisolated func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let reply = try await inner.send(request)
+        let reply: Result<(Data, HTTPURLResponse), Error>
+        do { reply = .success(try await inner.send(request)) } catch { reply = .failure(error) }
         await waitIfGated(request.url!.absoluteString, method: request.httpMethod)
-        return reply
+        return try reply.get()
     }
 
     func release() { let w = waiting; waiting = []; w.forEach { $0.resume() } }
@@ -1819,6 +1826,250 @@ func addGlobex(_ stub: Stub, _ store: FreeAgentDataStore) async throws {
     else { bad("the new account's entry was filed against \(filedTo)") }
 }
 
+/// Ends Al's session as `StatusItemController.performLogOut` does, and signs Bo in.
+@MainActor
+func signInAsBo(_ store: FreeAgentDataStore, _ ts: KeychainTokenStore, _ stub: Stub) {
+    store.endSession()
+    ts.clear()
+    _ = ts.save(FreeAgentTokens(accessToken: "b", refreshToken: "rb", expiresAt: Date(timeIntervalSinceNow: 3600)))
+    stub.setRule("users/me", body: #"{"user":{"url":"\#(U)/users/2","email":"bo@example.com"}}"#)
+}
+
+/// Whether a request names Al as its user, in its query or in a body JSONEncoder wrote.
+func namesAl(_ entry: (method: String, url: String, body: String, bearer: String)) -> Bool {
+    entry.url.contains("users/1") || entry.body.contains(#"users\/1"#)
+}
+
+@MainActor func s38() async throws {
+    hdr(38, "A token refresh the last session left in flight must not outlive it")
+    let stub = Stub()
+    baseRules(stub)
+    stub.setRule("/token", body: #"{"access_token":"a2","refresh_token":"r2","expires_in":3600}"#)
+    let gate = GatedStub(inner: stub, gateMatch: "/token")
+    let (store, ts) = makeStore(gate); defer { ts.clear() }
+    try await store.refresh()
+    // Al's access token has expired, so the next request exchanges the refresh token first.
+    _ = ts.save(FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: -10)))
+
+    gate.armed = true
+    let silent = Outcome(Task { @MainActor in try await store.refresh() })
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    signInAsBo(store, ts, stub)
+    stub.log = []
+    let login = Outcome(Task { @MainActor in try await store.refreshForNewSession() })
+    await settle()
+    gate.release()
+    guard await login.ended() else { bad("the login refresh never returned"); return }
+    if case .failure(let error) = login.result! { bad("the login refresh threw: \(error)"); return }
+    let stored = ts.load()?.refreshToken ?? "nothing"
+    if stored == "rb" { ok("Bo's sign-in is still the one stored") }
+    else { bad("the last session's token refresh stored \(stored) over Bo's sign-in") }
+    let bearers = Set(stub.log.filter { $0.url.contains("/v2/") }.map(\.bearer))
+    if bearers == ["Bearer b"] { ok("and Bo's login fetched with Bo's token") }
+    else { bad("Bo's login fetched with \(bearers.sorted())") }
+    guard await silent.ended() else { bad("the last session's refresh never returned"); return }
+    if case .failure(let error) = silent.result!, error.indicatesSessionExpired {
+        bad("the last session's refresh failed as an expired session, which signs out whoever is signed in")
+    } else {
+        ok("and the last session's refresh doesn't fail as an expired session")
+    }
+
+    // Nobody has signed in by the time Al's exchange returns.
+    let alone = Stub()
+    baseRules(alone)
+    alone.setRule("/token", body: #"{"access_token":"a2","refresh_token":"r2","expires_in":3600}"#)
+    let aloneGate = GatedStub(inner: alone, gateMatch: "/token")
+    let (aloneStore, aloneTs) = makeStore(aloneGate); defer { aloneTs.clear() }
+    try await aloneStore.refresh()
+    _ = aloneTs.save(FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: -10)))
+    aloneGate.armed = true
+    let aloneRefresh = Outcome(Task { @MainActor in try await aloneStore.refresh() })
+    guard await awaitGate(aloneGate) else { bad("gate never fired"); return }
+    aloneStore.endSession()
+    aloneTs.clear()
+    aloneGate.release()
+    guard await aloneRefresh.ended() else { bad("the last session's refresh never returned"); return }
+    if aloneTs.load() == nil { ok("a logout with nobody signed in since stays logged out") }
+    else { bad("the last session's token refresh stored its tokens again after the logout") }
+
+    // Al's exchange is still out when Bo's own token needs refreshing.
+    let both = Stub()
+    baseRules(both)
+    both.setRule("/token", body: #"{"access_token":"a2","refresh_token":"r2","expires_in":3600}"#)
+    let bothGate = GatedStub(inner: both, gateMatch: "/token")
+    let (bothStore, bothTs) = makeStore(bothGate); defer { bothTs.clear() }
+    try await bothStore.refresh()
+    _ = bothTs.save(FreeAgentTokens(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceNow: -10)))
+    bothGate.armed = true
+    // Switch task's read of the running timer, which a login doesn't wait for as it does a refresh.
+    let read = Task { @MainActor in try? await bothStore.runningTimeslip() }
+    guard await awaitGate(bothGate) else { bad("gate never fired"); return }
+    signInAsBo(bothStore, bothTs, both)
+    _ = bothTs.save(FreeAgentTokens(accessToken: "b", refreshToken: "rb", expiresAt: Date(timeIntervalSinceNow: -10)))
+    both.setRule("/token", body: #"{"access_token":"b2","refresh_token":"rb2","expires_in":3600}"#)
+    let bothLogin = Outcome(Task { @MainActor in try await bothStore.refreshForNewSession() })
+    await settle()
+    bothGate.release()
+    _ = await read.value
+    guard await bothLogin.ended() else { bad("the login refresh never returned"); return }
+    if case .failure(let error) = bothLogin.result! { bad("Bo's login joined the last session's token refresh and failed with it: \(error)") }
+    else if bothTs.load()?.refreshToken == "rb2", bothStore.accountEmail == "bo@example.com" { ok("and Bo's own token refresh doesn't join it") }
+    else { bad("Bo's login stored \(bothTs.load()?.refreshToken ?? "nothing") for \(bothStore.accountEmail)") }
+}
+
+@MainActor func s39() async throws {
+    hdr(39, "Open FreeAgent must not open the last session's company when the next one's can't be fetched")
+    let stub = Stub()
+    baseRules(stub)
+    let (store, ts) = makeStore(stub); defer { ts.clear() }
+    try await store.refresh()
+    signInAsBo(store, ts, stub)
+    stub.setRule("/company", body: "{}", status: 500)
+    try await store.refreshForNewSession()
+    if store.webAppURL == nil { ok("logging out forgets the last session's company") }
+    else { bad("Bo's Open FreeAgent opens \(store.webAppURL!)") }
+
+    // Al's refresh is in flight across the logout, with its company already fetched.
+    let late = Stub()
+    baseRules(late)
+    let gate = GatedStub(inner: late, gateMatch: "contacts?")
+    let (lateStore, lateTs) = makeStore(gate); defer { lateTs.clear() }
+    gate.armed = true
+    let silent = Task { @MainActor in try? await lateStore.refresh() }
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    // Every other fetch is answered by now, so only the commit is left once the gate opens.
+    await settle()
+    signInAsBo(lateStore, lateTs, late)
+    late.setRule("/company", body: "{}", status: 500)
+    let login = Outcome(Task { @MainActor in try await lateStore.refreshForNewSession() })
+    await settle()
+    gate.release()
+    _ = await silent.value
+    guard await login.ended() else { bad("the login refresh never returned"); return }
+    if case .failure(let error) = login.result! { bad("the login refresh threw: \(error)"); return }
+    if lateStore.webAppURL == nil { ok("nor does a refresh the last session left in flight bring it back") }
+    else { bad("the last session's refresh committed its company after the logout: \(lateStore.webAppURL!)") }
+}
+
+@MainActor func s40() async throws {
+    hdr(40, "A start the last session left in flight or queued must send nothing more once it has ended")
+    let stub = Stub()
+    baseRules(stub)
+    stub.setRule("v2/timeslips", body: #"{"timeslip":\#(slip(id: 70, task: 1, hours: "0.0", datedOn: today(), timerStart: nil))}"#)
+    let gate = GatedStub(inner: stub, gateMatch: "view=running")
+    let (store, ts) = makeStore(gate); defer { ts.clear() }
+    try await store.refresh()
+
+    gate.armed = true
+    let inFlight = Outcome(Task { @MainActor in
+        try await store.startTimer(taskId: "\(U)/tasks/1", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    })
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    let queued = Outcome(Task { @MainActor in
+        try await store.startTimer(taskId: "\(U)/tasks/2", projectId: "\(U)/projects/1", clientId: "\(U)/contacts/1")
+    })
+    for _ in 0..<5 { await Task.yield() }
+    signInAsBo(store, ts, stub)
+    stub.log = []
+    let login = Outcome(Task { @MainActor in try await store.refreshForNewSession() })
+    gate.release()
+    guard await inFlight.ended(), await queued.ended() else { bad("a start never returned"); return }
+    guard await login.ended() else { bad("the login refresh never returned"); return }
+    if case .failure(let error) = login.result! { bad("the login refresh threw: \(error)"); return }
+    let forAl = stub.log.filter(namesAl)
+    if forAl.isEmpty { ok("nothing more is sent for Al") }
+    else { bad("sent for Al with Bo's sign-in: \(forAl.map { "\($0.method) \($0.url) (\($0.bearer))" })") }
+    let posts = stub.log.filter { $0.method == "POST" }.map(\.url)
+    if posts.isEmpty, store.currentRunningTimeslip == nil { ok("and nothing is started in Bo's account") }
+    else { bad("Al's starts went on in Bo's account: \(posts)") }
+    if !store.hasLocalWritesSinceRefresh { ok("nor counted as a write in Bo's session") }
+    else { bad("Al's queued start counted as a write in Bo's session") }
+    for (name, start) in [("in flight", inFlight), ("queued", queued)] {
+        if case .failure(let error) = start.result!, error.indicatesSessionExpired {
+            bad("the \(name) start failed as an expired session, which signs out whoever is signed in")
+        }
+    }
+}
+
+@MainActor func s41() async throws {
+    hdr(41, "An entry the last session left in flight must send nothing more once it has ended")
+    for boSignsIn in [true, false] {
+        let stub = Stub()
+        baseRules(stub)
+        let server = TimeslipServer(inner: stub)
+        // `task=` is a lookup for an earlier attempt; a refresh's fetch doesn't filter by task.
+        let gate = GatedStub(inner: server, gateMatch: "task=", gateMethod: "GET")
+        let (store, ts) = makeStore(gate); defer { ts.clear() }
+        try await store.refresh()
+        // Al's first attempt never arrives, so the retry looks for it before posting again.
+        server.createFault = .neverArrives
+        _ = try? await logTask1(store)
+        server.createFault = .none
+        let posts = server.posts
+
+        gate.armed = true
+        let retry = Outcome(Task { @MainActor in try await logTask1(store) })
+        guard await awaitGate(gate) else { bad("gate never fired"); return }
+        if boSignsIn { signInAsBo(store, ts, stub) } else { store.endSession(); ts.clear() }
+        gate.release()
+        guard await retry.ended() else { bad("the retry never returned"); return }
+        let when = boSignsIn ? "once Bo has signed in" : "before anyone signs in"
+        if server.posts == posts { ok("the retry posts nothing \(when)") }
+        else { bad("the retry posted Al's entry \(when), filed against \(server.slips.last?["user"] ?? "nothing")") }
+        if case .failure(let error) = retry.result!, error.indicatesSessionExpired {
+            bad("the retry \(when) failed as an expired session, which signs out whoever is signed in")
+        }
+    }
+}
+
+@MainActor func s42() async throws {
+    hdr(42, "An entry whose response is lost as its session ends must not be looked for, nor reported unconfirmed")
+    let stub = Stub()
+    baseRules(stub)
+    let server = TimeslipServer(inner: stub)
+    let gate = GatedStub(inner: server, gateMatch: "v2/timeslips", gateMethod: "POST")
+    let (store, ts) = makeStore(gate); defer { ts.clear() }
+    try await store.refresh()
+
+    // FreeAgent logs the entry, and the response is lost after Al has logged out.
+    server.createFault = .loseResponse
+    gate.armed = true
+    let entry = Outcome(Task { @MainActor in try await logTask1(store) })
+    guard await awaitGate(gate) else { bad("gate never fired"); return }
+    let lookups = server.lookups
+    signInAsBo(store, ts, stub)
+    gate.release()
+    guard await entry.ended() else { bad("the entry never returned"); return }
+    if server.lookups == lookups { ok("Al's entry isn't looked for with Bo's sign-in") }
+    else { bad("Al's entry was looked for with Bo's sign-in") }
+    switch entry.result! {
+    case .failure(FreeAgentError.sessionEnded): ok("and it fails as ended, which no alert reports")
+    case .failure(let error): bad("it fails as \(error), which an alert reports to whoever is signed in now")
+    case .success(let slip): bad("it reports \(slip.id) as logged")
+    }
+}
+
+@MainActor func s43() async throws {
+    hdr(43, "A create the last session left unsettled must not be looked for in the next one's account")
+    let (server, store, ts) = resourceStore(); defer { ts.clear() }
+    try await store.refresh()
+    // Al's Globex never arrives, and can't be confirmed.
+    server.createFault = .neverArrives
+    _ = try? await makeClient(store, "Globex")
+    server.createFault = .none
+    signInAsBo(store, ts, server.inner)
+    try await store.refreshForNewSession()
+    // Bo's account has a Globex of its own, made in the web app since.
+    server.add(.contacts, ["organisation_name": "Globex"], createdAt: Date())
+    let lookups = server.lookups[.contacts, default: 0], posts = server.posts[.contacts, default: 0]
+    let made = try await makeClient(store, "Globex")
+    if server.lookups[.contacts, default: 0] == lookups, server.posts[.contacts, default: 0] == posts + 1 {
+        ok("Bo's create is posted, not settled against Al's attempt")
+    } else {
+        bad("Bo's create looked for Al's attempt and returned \(made) without posting")
+    }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 let only = ProcessInfo.processInfo.environment["ONLY"].flatMap(Int.init)
 var current = (scenario: 0, since: Date())
@@ -1899,6 +2150,12 @@ Task { @MainActor in
         if want(35) { try await s35() }
         if want(36) { try await s36() }
         if want(37) { try await s37() }
+        if want(38) { try await s38() }
+        if want(39) { try await s39() }
+        if want(40) { try await s40() }
+        if want(41) { try await s41() }
+        if want(42) { try await s42() }
+        if want(43) { try await s43() }
     } catch { print("harness error: \(error)"); bugCount += 1 }
     print("\n\(bugCount == 0 ? "ALL CLEAR" : "\(bugCount) BUG LINE(S)")")
     finish(bugCount == 0 ? 0 : 1)
