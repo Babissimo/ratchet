@@ -294,6 +294,9 @@ public enum MenuBuilder {
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Open FreeAgent", handler: actions.openFreeAgent))
         menu.addItem(ClosureMenuItem(title: "Send feedback", handler: actions.sendFeedback))
+        if let donate = actions.donate {
+            menu.addItem(ClosureMenuItem(title: "Donate", handler: donate))
+        }
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Log out", handler: actions.logOut))
         return menu

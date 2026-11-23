@@ -269,6 +269,9 @@ public final class StatusItemController {
         sendFeedback: {
             NSWorkspace.shared.open(FeedbackURL.newIssue())
         },
+        donate: DonateURL.page.map { url -> () -> Void in
+            { _ = NSWorkspace.shared.open(url) }
+        },
         addTask: { [weak self] clientId, projectId in
             self?.presentAddTaskPrompt(clientId: clientId, projectId: projectId)
         },

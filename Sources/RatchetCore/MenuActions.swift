@@ -11,6 +11,8 @@ public struct MenuActions {
     public let toggleLaunchAtLogin: () -> Void
     public let openFreeAgent: () -> Void
     public let sendFeedback: () -> Void
+    /// Nil leaves "Donate" out of the menu, so a build with no donation page offers no dead link.
+    public let donate: (() -> Void)?
     public let addTask: (_ clientId: String, _ projectId: String) -> Void
     public let addClient: () -> Void
     public let addProject: (_ clientId: String) -> Void
@@ -38,6 +40,7 @@ public struct MenuActions {
         toggleLaunchAtLogin: @escaping () -> Void,
         openFreeAgent: @escaping () -> Void,
         sendFeedback: @escaping () -> Void,
+        donate: (() -> Void)? = nil,
         addTask: @escaping (_ clientId: String, _ projectId: String) -> Void,
         addClient: @escaping () -> Void,
         addProject: @escaping (_ clientId: String) -> Void,
@@ -56,6 +59,7 @@ public struct MenuActions {
         self.toggleLaunchAtLogin = toggleLaunchAtLogin
         self.openFreeAgent = openFreeAgent
         self.sendFeedback = sendFeedback
+        self.donate = donate
         self.addTask = addTask
         self.addClient = addClient
         self.addProject = addProject

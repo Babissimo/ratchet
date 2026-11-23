@@ -362,6 +362,7 @@ html:not(.started) .item.beckon:not(:focus) .gutter { color: var(--green-ink); }
     <a href="#top">Ratchet</a>
     <a href="#features">What it does</a>
     <a href="#install">Install</a>
+    <a href="#help">Help</a>
     <a href="https://github.com/Babissimo/ratchet">GitHub</a>
   </nav>
   <div class="status">
@@ -452,12 +453,28 @@ html:not(.started) .item.beckon:not(:focus) .gutter { color: var(--green-ink); }
     </div>
   </section>
 
+  <section id="help" class="band">
+    <div class="wrap">
+      <div class="section-head"><h2>Help and feedback</h2></div>
+      <dl class="features">
+        <div>
+          <dt>Something not working?</dt>
+          <dd>Choose Send feedback from Ratchet's Settings menu, or <a href="https://github.com/Babissimo/ratchet/issues/new">open an issue on GitHub</a>. Ratchet is a personal project, so reports are read when time allows, with no promise of a fix or a reply.</dd>
+        </div>
+        <div>
+          <dt>Your data</dt>
+          <dd>No account, no analytics, no tracking. Your time entries go between your Mac and FreeAgent and nowhere else. The details are in <a href="/privacy">privacy and terms</a>.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
 </main>
 
 <footer>
   <div class="wrap">
     <span>Ratchet is free software under the GNU GPL v3, by <a href="https://babissimo.net">Babissimo</a>.</span>
-    <span>Not made by or affiliated with FreeAgent.</span>
+    <span>Not made by or affiliated with FreeAgent. <a href="/privacy">Privacy and terms</a>. <a href="https://github.com/sponsors/Babissimo">Donate</a>.</span>
   </div>
 </footer>
 
@@ -629,6 +646,8 @@ html:not(.started) .item.beckon:not(:focus) .gutter { color: var(--green-ink); }
       SEP,
       { label: 'Open FreeAgent', run: () => say('Open FreeAgent', 'Opens FreeAgent in your browser.') },
       sendFeedback,
+      { label: 'Donate', run: () => say('Donate',
+        'Opens Ratchet\'s GitHub Sponsors page in your browser.') },
       SEP,
       { label: 'Log out', run: logOut },
     ];
