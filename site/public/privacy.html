@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy and terms: Ratchet</title>
+<meta name="description" content="What Ratchet does with your data, and the terms it comes with.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+:root {
+  --ground: #E3E7E1;
+  --ink: #131B17;
+  --ink-soft: #4A5750;
+  --rule: #BFC8C1;
+  --focus: #0A62D9;
+  --f-body: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --f-mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --gutter: clamp(16px, 5vw, 64px);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ground: #111714; --ink: #E2E8E3; --ink-soft: #97A59C; --rule: #2B3630; --focus: #5A9BFF; }
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 400 17px/1.6 var(--f-body); }
+a { color: inherit; text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+main { max-width: 44rem; padding: 48px var(--gutter) 64px; }
+.back { font: 400 0.75rem/1 var(--f-mono); color: var(--ink-soft); }
+h1 { margin: 28px 0 8px; font-size: 2rem; line-height: 1.15; }
+h2 { margin: 40px 0 8px; padding-top: 24px; border-top: 1px solid var(--rule); font-size: 1.25rem; }
+h3 { margin: 24px 0 4px; font-size: 1rem; }
+p, ul { margin: 0 0 12px; }
+ul { padding-left: 1.2em; }
+li { margin-bottom: 6px; }
+.updated { color: var(--ink-soft); font: 400 0.75rem/1.6 var(--f-mono); }
+code { font: 400 0.86em/1 var(--f-mono); }
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="/">← Ratchet</a>
+  <h1>Privacy and terms</h1>
+  <p class="updated">Last updated 23 November 2026</p>
+
+  <h2 id="privacy">Privacy</h2>
+  <p>Ratchet has no account, no analytics and no tracking. Your time entries go between your Mac and FreeAgent, and nowhere else.</p>
+
+  <h3>On your Mac</h3>
+  <ul>
+    <li>Your FreeAgent sign-in tokens, in the macOS Keychain. Logging out of Ratchet deletes them.</li>
+    <li>The last task you tracked, in Ratchet's preferences, so it can offer that task again.</li>
+    <li>Your clients, projects, tasks and recent time entries, held in memory while Ratchet runs. macOS's standard networking may also keep a short-lived cache of FreeAgent's responses in Ratchet's Caches folder.</li>
+  </ul>
+
+  <h3>FreeAgent</h3>
+  <p>Ratchet reads and writes your clients, projects, tasks and timeslips through FreeAgent's API, as you ask it to. That data is held by FreeAgent under <a href="https://www.freeagent.com/privacy/general-privacy-notice/">FreeAgent's own privacy policy</a>. You can revoke Ratchet's access at any time from FreeAgent's settings.</p>
+
+  <h3>The sign-in service</h3>
+  <p>FreeAgent requires an app secret that can't ship inside an open-source app, so a small service at <code>auth.ratchet.babissimo.net</code> adds it when Ratchet signs in and when it renews access, about once an hour. Your sign-in tokens pass through it on the way to your Mac, encrypted so that only your copy of Ratchet can open them. It does not store or log them, and it never sees your time entries.</p>
+  <p>To stop one client flooding it, the service counts requests per IP address over a one-minute window. That count is not kept beyond the window. The service runs on Cloudflare, which processes request data such as IP addresses to deliver and protect it, under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>. The <a href="https://github.com/Babissimo/ratchet/tree/main/worker">service's source code</a> is public.</p>
+
+  <h3>Feedback</h3>
+  <p>"Send feedback" opens a new issue on Ratchet's public GitHub repository in your browser, with your Ratchet and macOS versions filled in. Nothing is sent unless you submit it, and what you submit is public and held by GitHub under <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>
+
+  <h3>This website</h3>
+  <p>This site is static and served by Cloudflare. It sets no cookies and runs no analytics. The home page loads its fonts from Google Fonts, so your browser asks Google for them, under <a href="https://policies.google.com/privacy">Google's privacy policy</a>.</p>
+
+  <h3>Questions</h3>
+  <p>Ratchet is made by <a href="https://babissimo.net">Babissimo</a>. Questions about this page can go in a <a href="https://github.com/Babissimo/ratchet/issues/new">GitHub issue</a>. If anything here changes, this page will say so and its date will change.</p>
+
+  <h2 id="terms">Terms</h2>
+  <p>Ratchet is free software, released under the <a href="https://github.com/Babissimo/ratchet/blob/main/LICENSE">GNU General Public License, version 3</a>. You may use, study, share and change it under that licence.</p>
+  <p>It is provided as is, without warranty of any kind, as the licence sets out. In particular, check your timesheets in FreeAgent before you invoice from them. Ratchet changes the same timeslips FreeAgent shows you, and a bug could record time wrongly.</p>
+  <p>Ratchet is a personal project, not made by or affiliated with FreeAgent. Bug reports are welcome on GitHub and are looked at when time allows, but there is no promise of support, fixes or a reply. The sign-in service may be changed or switched off, which would stop Ratchet from signing in.</p>
+  <p>Your use of FreeAgent itself stays under your agreement with FreeAgent.</p>
+</main>
+</body>
+</html>

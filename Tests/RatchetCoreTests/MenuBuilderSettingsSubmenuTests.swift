@@ -114,4 +114,18 @@ final class MenuBuilderSettingsSubmenuTests: XCTestCase {
         _ = feedbackItem.target?.perform(feedbackItem.action, with: feedbackItem)
         XCTAssertTrue(sentFeedback)
     }
+
+    func test_donateItem_followsSendFeedbackAndInvokesDonateAction() {
+        var donated = false
+        let actions = MenuActions(
+            logIn: {}, logOut: {}, startTracking: { _ in }, stopTracking: {}, switchTask: { _ in },
+            refresh: {}, toggleLaunchAtLogin: {}, openFreeAgent: {}, sendFeedback: {}, donate: { donated = true },
+            addTask: { _, _ in }, addClient: {}, addProject: { _ in }, logPastTime: { _, _, _ in }, logPastTimeForNewTask: { _, _ in }, switchToNewTask: { _, _ in }, editTimeEntry: { _ in }, quit: {}
+        )
+        let menu = MenuBuilder.buildSettingsSubmenu(dataStore: FakeDataStore.seeded(), state: AppState(), actions: actions)
+        XCTAssertEqual(Array(menu.items.map(\.title).suffix(4)), ["Send feedback", "Donate", "", "Log out"])
+        let donateItem = menu.items[6] as! ClosureMenuItem
+        _ = donateItem.target?.perform(donateItem.action, with: donateItem)
+        XCTAssertTrue(donated)
+    }
 }
